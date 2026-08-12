@@ -627,7 +627,13 @@ FEED_TEMPLATE = """
         {% endif %}
       </p>
     {% endif %}
-    <p><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a></p>
+    <div class="actions-row">
+      <a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a>
+      <form method="post" action="{{ url_for('delete_signal', signal_id=s['id']) }}"
+            onsubmit="return confirm('Ta bort den här signalen? Det går inte att ångra.');">
+        <button type="submit" class="btn-danger">Ta bort</button>
+      </form>
+    </div>
   </li>
 {% endfor %}
 </ul>
@@ -681,6 +687,18 @@ def feed():
         tags_by_signal=tags_by_signal,
         hyps_by_signal=hyps_by_signal,
     )
+
+
+@app.route("/signals/<uuid:signal_id>/delete", methods=["POST"])
+@login_required
+def delete_signal(signal_id):
+    db = get_supabase()
+    user_id = g.user.id
+    signal_id = str(signal_id)
+    db.table("signal_tags").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
+    db.table("signal_hypotheses").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
+    db.table("signals").delete().eq("id", signal_id).eq("user_id", user_id).execute()
+    return redirect(url_for("feed"))
 
 
 @app.route("/signals/<uuid:signal_id>/done", methods=["POST"])

@@ -33,6 +33,7 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=bool(os.environ.get("VERCEL")),
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
 )
 
 
@@ -148,6 +149,7 @@ def login():
             return render_template_string(
                 page("Logga in", LOGIN_TEMPLATE), error="Fel e-post eller lösenord."
             )
+        session.permanent = True
         session["access_token"] = auth_response.session.access_token
         session["refresh_token"] = auth_response.session.refresh_token
         next_url = request.args.get("next") or url_for("feed")

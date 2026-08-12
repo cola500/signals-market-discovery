@@ -142,6 +142,17 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .error{color:var(--rose-text);background:var(--rose-100);padding:.75rem 1rem;border-radius:var(--radius-md);border-left:3px solid var(--danger-500);display:block;margin-bottom:1rem}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
+#ptr{position:fixed;top:0;left:50%;width:36px;height:36px;margin-left:-18px;border-radius:50%;background:var(--white);box-shadow:var(--shadow-md);display:flex;align-items:center;justify-content:center;z-index:20;opacity:0;transform:translateY(calc(-100% + var(--pull, 0px)));pointer-events:none}
+#ptr.show{transition:none}
+#ptr:not(.show){transition:transform .2s var(--ease),opacity .2s var(--ease)}
+#ptr.show,#ptr.loading{opacity:1}
+#ptr.loading{transform:translateY(14px)}
+#ptr svg{width:18px;height:18px;color:var(--ink-400);transition:transform .15s var(--ease),color .15s var(--ease)}
+#ptr.ready svg.ptr-arrow{color:var(--coral-500);transform:rotate(180deg)}
+#ptr .ptr-spinner{display:none;color:var(--coral-500)}
+#ptr.loading svg.ptr-arrow{display:none}
+#ptr.loading svg.ptr-spinner{display:block;animation:ptr-spin .7s linear infinite}
+@keyframes ptr-spin{to{transform:rotate(360deg)}}
 </style>
 """
 
@@ -187,12 +198,76 @@ if (sessionStorage.getItem('signals_splash_shown')) {
 """
 
 
+PULL_TO_REFRESH = """
+<div id="ptr" aria-hidden="true">
+  <svg class="ptr-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>
+  <svg class="ptr-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-9-9"></path></svg>
+</div>
+<script>
+(function () {
+  var ptr = document.getElementById('ptr');
+  var threshold = 70;
+  var startY = null;
+  var pulling = false;
+  var loading = false;
+
+  function setPull(px) {
+    ptr.style.setProperty('--pull', px + 'px');
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    if (loading) return;
+    var target = e.target.closest('input, textarea, select');
+    if (target || window.scrollY > 0) {
+      startY = null;
+      pulling = false;
+      return;
+    }
+    startY = e.touches[0].clientY;
+    pulling = true;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', function (e) {
+    if (!pulling || startY === null || loading) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy <= 0 || window.scrollY > 0) {
+      ptr.classList.remove('show', 'ready');
+      setPull(0);
+      return;
+    }
+    e.preventDefault();
+    var dist = Math.min(dy * 0.5, 100);
+    setPull(dist);
+    ptr.classList.add('show');
+    ptr.classList.toggle('ready', dist >= threshold);
+  }, { passive: false });
+
+  document.addEventListener('touchend', function () {
+    if (!pulling) return;
+    pulling = false;
+    var ready = ptr.classList.contains('ready');
+    if (ready) {
+      loading = true;
+      ptr.classList.remove('show', 'ready');
+      ptr.classList.add('loading');
+      location.reload();
+    } else {
+      ptr.classList.remove('show', 'ready');
+      setPull(0);
+    }
+    startY = null;
+  }, { passive: true });
+})();
+</script>
+"""
+
+
 def page(title, body_template):
     return (
         f"<!doctype html><html><head><meta charset='utf-8'>"
         f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"{HEAD_EXTRAS}"
-        f"<title>{title}</title>{STYLE}</head><body>{SPLASH}{NAV}{body_template}</body></html>"
+        f"<title>{title}</title>{STYLE}</head><body>{SPLASH}{PULL_TO_REFRESH}{NAV}{body_template}</body></html>"
     )
 
 

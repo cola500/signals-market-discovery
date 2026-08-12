@@ -116,6 +116,10 @@ button:active{transform:scale(.97)}
 .btn-primary{width:100%;margin-top:.5rem;background:var(--coral-500);border:none;color:#fff}
 .btn-primary:hover{background:var(--coral-600)}
 .btn-primary:active{background:var(--coral-700);transform:scale(.97)}
+.btn-danger{background:var(--danger-500);border:none;color:#fff}
+.btn-danger:hover{background:#B5294A}
+.actions-row{display:flex;gap:.6rem;margin-bottom:1rem}
+.actions-row form{margin:0}
 fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
@@ -701,6 +705,13 @@ HYPOTHESES_LIST_TEMPLATE = """
 HYPOTHESIS_DETAIL_TEMPLATE = """
 <p><a href="{{ url_for('hypotheses_list') }}">&larr; Alla hypoteser</a></p>
 <h1>{{ hyp['statement'] }}</h1>
+<div class="actions-row">
+  <a href="{{ url_for('edit_hypothesis', hypothesis_id=hyp['id']) }}">Redigera</a>
+  <form method="post" action="{{ url_for('delete_hypothesis', hypothesis_id=hyp['id']) }}"
+        onsubmit="return confirm('Ta bort den här hypotesen? Kopplingar till signaler tas också bort. Det går inte att ångra.');">
+    <button type="submit" class="btn-danger">Ta bort</button>
+  </form>
+</div>
 <form method="post" action="{{ url_for('update_hypothesis_status', hypothesis_id=hyp['id']) }}">
   <label>Status
     <select name="status" onchange="this.form.submit()">
@@ -720,6 +731,16 @@ HYPOTHESIS_DETAIL_TEMPLATE = """
 <ul>
 {% for s in contradicting %}<li>{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</li>{% endfor %}
 </ul>
+"""
+
+HYPOTHESIS_EDIT_TEMPLATE = """
+<p><a href="{{ url_for('hypothesis_detail', hypothesis_id=hypothesis_id) }}">&larr; Tillbaka</a></p>
+<h1>Redigera hypotes</h1>
+{% if error %}<span class="error">{{ error }}</span>{% endif %}
+<form method="post" action="{{ url_for('edit_hypothesis', hypothesis_id=hypothesis_id) }}">
+  <label>Hypotes<textarea name="statement" required>{{ statement_value }}</textarea></label>
+  <button type="submit" class="btn-primary">Spara ändringar</button>
+</form>
 """
 
 
@@ -785,6 +806,52 @@ def update_hypothesis_status(hypothesis_id):
         "user_id", g.user.id
     ).execute()
     return redirect(url_for("hypothesis_detail", hypothesis_id=hypothesis_id))
+
+
+@app.route("/hypotheses/<uuid:hypothesis_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_hypothesis(hypothesis_id):
+    db = get_supabase()
+    user_id = g.user.id
+    hypothesis_id = str(hypothesis_id)
+    hyp_rows = (
+        db.table("hypotheses").select("*").eq("id", hypothesis_id).eq("user_id", user_id).execute().data
+    )
+    if not hyp_rows:
+        return redirect(url_for("hypotheses_list"))
+    hyp = hyp_rows[0]
+
+    if request.method == "POST":
+        statement = request.form.get("statement", "").strip()
+        if not statement:
+            return render_template_string(
+                page("Redigera hypotes", HYPOTHESIS_EDIT_TEMPLATE),
+                hypothesis_id=hypothesis_id,
+                statement_value=statement,
+                error="Hypotesen kan inte vara tom.",
+            )
+        db.table("hypotheses").update({"statement": statement}).eq("id", hypothesis_id).eq(
+            "user_id", user_id
+        ).execute()
+        return redirect(url_for("hypothesis_detail", hypothesis_id=hypothesis_id))
+
+    return render_template_string(
+        page("Redigera hypotes", HYPOTHESIS_EDIT_TEMPLATE),
+        hypothesis_id=hypothesis_id,
+        statement_value=hyp["statement"],
+        error=None,
+    )
+
+
+@app.route("/hypotheses/<uuid:hypothesis_id>/delete", methods=["POST"])
+@login_required
+def delete_hypothesis(hypothesis_id):
+    db = get_supabase()
+    user_id = g.user.id
+    hypothesis_id = str(hypothesis_id)
+    db.table("signal_hypotheses").delete().eq("hypothesis_id", hypothesis_id).eq("user_id", user_id).execute()
+    db.table("hypotheses").delete().eq("id", hypothesis_id).eq("user_id", user_id).execute()
+    return redirect(url_for("hypotheses_list"))
 
 
 REVIEW_TEMPLATE = """

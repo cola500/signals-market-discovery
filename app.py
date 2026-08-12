@@ -98,12 +98,14 @@ h2{font-weight:700;font-size:1.15rem;margin:1.75rem 0 .75rem;color:var(--ink-950
 a{color:var(--coral-600);font-weight:600;text-decoration:none;transition:color .12s var(--ease)}
 a:visited{color:var(--coral-600)}
 a:hover{color:var(--coral-700);text-decoration:underline}
-nav{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:2px;background:var(--white);border-top:1px solid var(--ink-100);box-shadow:var(--shadow-md);padding:.5rem .5rem calc(.5rem + env(safe-area-inset-bottom));z-index:10}
-nav a,nav a:visited{flex:1;text-align:center;padding:.4rem .3rem;display:block;color:var(--ink-600);font-weight:600;font-size:.8rem;text-decoration:none;border-radius:var(--radius-md);transition:color .12s var(--ease)}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:stretch;gap:2px;background:var(--white);border-top:1px solid var(--ink-100);box-shadow:var(--shadow-md);padding:.4rem .5rem calc(.4rem + env(safe-area-inset-bottom));z-index:10}
+nav a,nav a:visited{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.2rem;padding:.3rem .2rem;color:var(--ink-600);font-weight:600;font-size:.7rem;text-decoration:none;border-radius:var(--radius-md);transition:color .12s var(--ease)}
 nav a:hover{color:var(--coral-600)}
-nav form{display:inline-block;flex:0}
-nav button{padding:.4rem .6rem;min-height:auto;font-size:.75rem;background:none;border:none;color:var(--ink-400);font-weight:600}
+nav a svg{width:20px;height:20px;flex-shrink:0}
+nav form{display:flex;flex:1}
+nav button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.2rem;padding:.3rem .2rem;min-height:auto;font-size:.7rem;background:none;border:none;color:var(--ink-400);font-weight:600}
 nav button:hover{color:var(--ink-950)}
+nav button svg{width:20px;height:20px;flex-shrink:0}
 form label{display:block;margin-bottom:1rem;font-weight:600;font-size:.875rem;color:var(--ink-950)}
 input,select,textarea{width:100%;padding:.7rem .85rem;box-sizing:border-box;font-size:1rem;font-family:inherit;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);margin-top:.4rem;transition:border-color .12s var(--ease),box-shadow .12s var(--ease)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--coral-500);box-shadow:0 0 0 3px rgba(255,106,71,.25)}
@@ -135,13 +137,13 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 NAV = """
 <nav>
   {% if session.get('access_token') %}
-    <a href="{{ url_for('feed') }}">Feed</a>
-    <a href="/signals/new">+ Ny signal</a>
-    <a href="/hypotheses">Hypoteser</a>
-    <a href="/review">Veckoöversikt</a>
-    <form method="post" action="{{ url_for('logout') }}"><button type="submit">Logga ut</button></form>
+    <a href="{{ url_for('feed') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>Feed</span></a>
+    <a href="/signals/new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>+ Ny signal</span></a>
+    <a href="/hypotheses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7 3 3 0 0 1 1 2.3h6a3 3 0 0 1 1-2.3A7 7 0 0 0 12 2z"></path></svg><span>Hypoteser</span></a>
+    <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Veckoöversikt</span></a>
+    <form method="post" action="{{ url_for('logout') }}"><button type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span>Logga ut</span></button></form>
   {% else %}
-    <a href="{{ url_for('login') }}">Logga in</a>
+    <a href="{{ url_for('login') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg><span>Logga in</span></a>
   {% endif %}
 </nav>
 """
@@ -578,7 +580,7 @@ def edit_signal(signal_id):
 
 
 FEED_TEMPLATE = """
-<h1>Signal Feed</h1>
+<h1>Signals flöde</h1>
 <p><a href="{{ url_for('new_signal') }}">+ Ny signal</a></p>
 {% if not signals %}
 <p>Inga signaler ännu.</p>

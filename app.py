@@ -16,9 +16,10 @@ inte lokalt - appen fungerar likadant lokalt och i produktion.
 import os
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
+from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, g, redirect, render_template_string, request, session, url_for
+from flask import Flask, g, redirect, render_template_string, request, send_from_directory, session, url_for
 from supabase import Client, ClientOptions, create_client
 
 load_dotenv()
@@ -77,27 +78,57 @@ def login_required(view):
 
 STYLE = """
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  nav a { margin-right: 0.25rem; padding: 0.6rem 0.5rem; display: inline-block; }
-  nav form { display: inline-block; }
-  nav button { padding: 0.4rem 0.6rem; min-height: auto; font-size: 15px; }
-  form label { display: block; margin-bottom: 0.75rem; }
-  input, select, textarea { width: 100%; padding: 0.6rem; box-sizing: border-box; font-size: 16px; font-family: inherit; }
-  textarea { min-height: 6rem; }
-  button { padding: 0.75rem 1.25rem; font-size: 16px; font-family: inherit; border-radius: 6px; min-height: 44px; }
-  .btn-primary { width: 100%; margin-top: 0.5rem; }
-  fieldset { margin-bottom: 0.75rem; border: 1px solid #ddd; }
-  .feed { list-style: none; padding: 0; }
-  .feed li { border-bottom: 1px solid #ddd; padding: 1rem 0; }
-  .badge { display: inline-block; background: #eee; border-radius: 4px; padding: 0.1rem 0.5rem; font-size: 0.85rem; margin-right: 0.3rem; }
-  .tag { display: inline-block; border-radius: 4px; padding: 0.1rem 0.5rem; font-size: 0.8rem; margin-right: 0.3rem; }
-  .tag.problem { background: #fde2e2; }
-  .tag.role { background: #e2ecfd; }
-  .hyp { display: block; font-size: 0.85rem; }
-  .hyp.supports { color: #1a7f37; }
-  .hyp.contradicts { color: #b3261e; }
-  .next-action.done { text-decoration: line-through; color: #888; }
-  .error { color: #b3261e; }
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+:root{
+  --ink-950:#1C1712;--ink-600:#5C5346;--ink-400:#8A8072;--ink-200:#C9C0B2;--ink-100:#E8E1D4;--ink-50:#F5F0E6;
+  --cream-50:#FFF9F0;--white:#fff;
+  --coral-500:#FF6A47;--coral-600:#F04F28;--coral-700:#C93B18;
+  --teal-100:#D9F1EC;--teal-700:#1E6A5F;
+  --rose-100:#FBE3E8;--rose-text:#9C2B45;
+  --success-500:#2E9E5B;--danger-500:#D8365A;
+  --radius-md:10px;--radius-lg:16px;--radius-full:999px;
+  --shadow-sm:0 1px 2px rgba(28,23,18,.06);
+  --shadow-md:0 4px 12px rgba(28,23,18,.08);
+  --ease:cubic-bezier(.2,.8,.2,1);
+}
+*{box-sizing:border-box}
+body{font-family:'Manrope',system-ui,sans-serif;max-width:640px;margin:0 auto;padding:1rem 1rem 5rem;color:var(--ink-950);background:var(--cream-50);line-height:1.55}
+h1{font-weight:700;font-size:1.75rem;margin:1rem 0 1rem}
+h2{font-weight:700;font-size:1.15rem;margin:1.75rem 0 .75rem;color:var(--ink-950)}
+a{color:var(--coral-600);font-weight:600;text-decoration:none;transition:color .12s var(--ease)}
+a:visited{color:var(--coral-600)}
+a:hover{color:var(--coral-700);text-decoration:underline}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;align-items:center;gap:2px;background:var(--white);border-top:1px solid var(--ink-100);box-shadow:var(--shadow-md);padding:.5rem .5rem calc(.5rem + env(safe-area-inset-bottom));z-index:10}
+nav a,nav a:visited{flex:1;text-align:center;padding:.4rem .3rem;display:block;color:var(--ink-600);font-weight:600;font-size:.8rem;text-decoration:none;border-radius:var(--radius-md);transition:color .12s var(--ease)}
+nav a:hover{color:var(--coral-600)}
+nav form{display:inline-block;flex:0}
+nav button{padding:.4rem .6rem;min-height:auto;font-size:.75rem;background:none;border:none;color:var(--ink-400);font-weight:600}
+nav button:hover{color:var(--ink-950)}
+form label{display:block;margin-bottom:1rem;font-weight:600;font-size:.875rem;color:var(--ink-950)}
+input,select,textarea{width:100%;padding:.7rem .85rem;box-sizing:border-box;font-size:1rem;font-family:inherit;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);margin-top:.4rem;transition:border-color .12s var(--ease),box-shadow .12s var(--ease)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--coral-500);box-shadow:0 0 0 3px rgba(255,106,71,.25)}
+textarea{min-height:6rem;resize:vertical}
+button{padding:.75rem 1.25rem;font-size:1rem;font-family:inherit;font-weight:700;border-radius:var(--radius-md);min-height:44px;border:1px solid var(--ink-200);background:var(--ink-50);color:var(--ink-950);cursor:pointer;transition:background .12s var(--ease),transform .12s var(--ease)}
+button:hover{background:var(--ink-100)}
+button:active{transform:scale(.97)}
+.btn-primary{width:100%;margin-top:.5rem;background:var(--coral-500);border:none;color:#fff}
+.btn-primary:hover{background:var(--coral-600)}
+.btn-primary:active{background:var(--coral-700);transform:scale(.97)}
+fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
+legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
+.feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
+.feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
+.badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
+.tag{display:inline-block;border-radius:var(--radius-full);padding:.2rem .7rem;font-size:.8rem;font-weight:600;margin-right:.35rem}
+.tag.problem{background:var(--rose-100);color:var(--rose-text)}
+.tag.role{background:var(--teal-100);color:var(--teal-700)}
+.hyp{display:block;font-size:.85rem;font-weight:600;margin-top:.4rem}
+.hyp.supports{color:var(--success-500)}
+.hyp.contradicts{color:var(--danger-500)}
+.next-action.done{text-decoration:line-through;color:var(--ink-400)}
+.error{color:var(--rose-text);background:var(--rose-100);padding:.75rem 1rem;border-radius:var(--radius-md);border-left:3px solid var(--danger-500);display:block;margin-bottom:1rem}
+#splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
+#splash img{width:88px;height:88px;border-radius:20px}
 </style>
 """
 
@@ -116,12 +147,40 @@ NAV = """
 """
 
 
+HEAD_EXTRAS = """
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Signals">
+<meta name="theme-color" content="#FF6A47">
+<link rel="apple-touch-icon" href="/app-icon.svg">
+<link rel="icon" href="/app-icon.svg">
+"""
+
+SPLASH = """
+<div id="splash"><img src="/app-icon.svg"></div>
+<script>window.addEventListener('load',()=>{setTimeout(()=>{const s=document.getElementById('splash');if(s){s.style.opacity='0';setTimeout(()=>s.remove(),400)}},400)})</script>
+"""
+
+
 def page(title, body_template):
     return (
         f"<!doctype html><html><head><meta charset='utf-8'>"
         f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{title}</title>{STYLE}</head><body>{NAV}{body_template}</body></html>"
+        f"{HEAD_EXTRAS}"
+        f"<title>{title}</title>{STYLE}</head><body>{SPLASH}{NAV}{body_template}</body></html>"
     )
+
+
+PUBLIC_DIR = Path(__file__).parent / "public"
+
+
+@app.route("/app-icon.svg")
+def app_icon():
+    # On Vercel, files under public/** are served directly by the platform
+    # and this route is never hit. Locally (uv run app.py) there is no such
+    # layer, so Flask serves the same file itself - same pattern Vercel's
+    # own docs use for /favicon.ico.
+    return send_from_directory(PUBLIC_DIR, "app-icon.svg", mimetype="image/svg+xml")
 
 
 LOGIN_TEMPLATE = """

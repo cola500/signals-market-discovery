@@ -13,3 +13,6 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Design handoff package - working files, not app source
+design-package/

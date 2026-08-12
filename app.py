@@ -2,99 +2,84 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "flask",
+#     "supabase==2.31.0",
+#     "python-dotenv",
 # ]
 # ///
 """Signals - market discovery for job search.
 
-Kör: uv run app.py
-Öppnas på http://localhost:5050 (och från mobilen via laptopens lokala IP,
-samma WiFi).
+Kör lokalt: uv run app.py
+Kräver en .env-fil med SUPABASE_URL, SUPABASE_ANON_KEY, FLASK_SECRET_KEY
+(se .env.example). Data lagras i Supabase Postgres (schema "signals"),
+inte lokalt - appen fungerar likadant lokalt och i produktion.
 """
-import sqlite3
-from datetime import date
-from pathlib import Path
+import os
+from datetime import date, datetime, timedelta, timezone
+from functools import wraps
 
-from flask import Flask, g, redirect, render_template_string, request, url_for
+from dotenv import load_dotenv
+from flask import Flask, g, redirect, render_template_string, request, session, url_for
+from supabase import Client, ClientOptions, create_client
 
-DB_PATH = Path(__file__).parent / "signals.db"
+load_dotenv()
+
+SUPABASE_URL = os.environ["SUPABASE_URL"]
+SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
+_CLIENT_OPTIONS = ClientOptions(schema="signals")
 
 app = Flask(__name__)
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    person TEXT NOT NULL,
-    organization TEXT,
-    signal_type TEXT NOT NULL,
-    role_opportunity TEXT,
-    channel TEXT,
-    note TEXT NOT NULL,
-    learning TEXT,
-    problem_heard TEXT,
-    interest_signal TEXT,
-    next_action TEXT,
-    next_action_done INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    text TEXT NOT NULL,
-    category TEXT NOT NULL CHECK (category IN ('problem', 'role')),
-    UNIQUE(text, category)
-);
-
-CREATE TABLE IF NOT EXISTS signal_tags (
-    signal_id INTEGER NOT NULL REFERENCES signals(id),
-    tag_id INTEGER NOT NULL REFERENCES tags(id),
-    PRIMARY KEY (signal_id, tag_id)
-);
-
-CREATE TABLE IF NOT EXISTS hypotheses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    statement TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'exploring'
-        CHECK (status IN ('exploring', 'strengthening', 'weakening', 'retired')),
-    notes TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS signal_hypotheses (
-    signal_id INTEGER NOT NULL REFERENCES signals(id),
-    hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id),
-    relation TEXT NOT NULL CHECK (relation IN ('supports', 'contradicts')),
-    PRIMARY KEY (signal_id, hypothesis_id)
-);
-"""
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("VERCEL")),
+)
 
 
-def get_db():
+def get_supabase() -> Client:
+    """Per-request Supabase client, scoped to the logged-in user's session.
+
+    RLS policies (user_id = auth.uid()) are the real access boundary - this
+    client always carries the current user's access token, never a
+    privileged key, so a query can only ever see that user's own rows.
+    """
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY, options=_CLIENT_OPTIONS)
+        access_token = session.get("access_token")
+        refresh_token = session.get("refresh_token")
+        if access_token and refresh_token:
+            auth_response = client.auth.set_session(access_token, refresh_token)
+            session["access_token"] = auth_response.session.access_token
+            session["refresh_token"] = auth_response.session.refresh_token
+            g.user = auth_response.user
+        g.db = client
     return g.db
 
 
-@app.teardown_appcontext
-def close_db(exception=None):
-    db = g.pop("db", None)
-    if db is not None:
-        db.close()
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("access_token"):
+            return redirect(url_for("login", next=request.path))
+        try:
+            get_supabase()
+        except Exception:
+            session.clear()
+            return redirect(url_for("login", next=request.path))
+        if not getattr(g, "user", None):
+            session.clear()
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
 
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(SCHEMA)
-    conn.commit()
-    conn.close()
+    return wrapped
 
 
 STYLE = """
 <style>
   body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; padding: 0 1rem; color: #222; }
   nav a { margin-right: 0.25rem; padding: 0.6rem 0.5rem; display: inline-block; }
+  nav form { display: inline-block; }
+  nav button { padding: 0.4rem 0.6rem; min-height: auto; font-size: 15px; }
   form label { display: block; margin-bottom: 0.75rem; }
   input, select, textarea { width: 100%; padding: 0.6rem; box-sizing: border-box; font-size: 16px; font-family: inherit; }
   textarea { min-height: 6rem; }
@@ -111,15 +96,21 @@ STYLE = """
   .hyp.supports { color: #1a7f37; }
   .hyp.contradicts { color: #b3261e; }
   .next-action.done { text-decoration: line-through; color: #888; }
+  .error { color: #b3261e; }
 </style>
 """
 
 NAV = """
 <nav>
-  <a href="{{ url_for('feed') }}">Feed</a>
-  <a href="/signals/new">+ Ny signal</a>
-  <a href="/hypotheses">Hypoteser</a>
-  <a href="/review">Veckoöversikt</a>
+  {% if session.get('access_token') %}
+    <a href="{{ url_for('feed') }}">Feed</a>
+    <a href="/signals/new">+ Ny signal</a>
+    <a href="/hypotheses">Hypoteser</a>
+    <a href="/review">Veckoöversikt</a>
+    <form method="post" action="{{ url_for('logout') }}"><button type="submit">Logga ut</button></form>
+  {% else %}
+    <a href="{{ url_for('login') }}">Logga in</a>
+  {% endif %}
 </nav>
 """
 
@@ -130,6 +121,45 @@ def page(title, body_template):
         f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"<title>{title}</title>{STYLE}</head><body>{NAV}{body_template}</body></html>"
     )
+
+
+LOGIN_TEMPLATE = """
+<h1>Logga in</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post">
+  <label>E-post<input type="email" name="email" required autofocus></label>
+  <label>Lösenord<input type="password" name="password" required></label>
+  <button type="submit" class="btn-primary">Logga in</button>
+</form>
+"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip()
+        password = request.form.get("password", "")
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY, options=_CLIENT_OPTIONS)
+        try:
+            auth_response = client.auth.sign_in_with_password(
+                {"email": email, "password": password}
+            )
+        except Exception:
+            return render_template_string(
+                page("Logga in", LOGIN_TEMPLATE), error="Fel e-post eller lösenord."
+            )
+        session["access_token"] = auth_response.session.access_token
+        session["refresh_token"] = auth_response.session.refresh_token
+        next_url = request.args.get("next") or url_for("feed")
+        return redirect(next_url)
+
+    return render_template_string(page("Logga in", LOGIN_TEMPLATE), error=None)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
 
 
 SIGNAL_TYPE_SEED = [
@@ -145,24 +175,32 @@ def parse_tag_list(raw):
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
-def get_or_create_tag(db, text, category):
+def get_or_create_tag(db, user_id, text, category):
     text = text.strip().lower()
-    row = db.execute(
-        "SELECT id FROM tags WHERE text = ? AND category = ?", (text, category)
-    ).fetchone()
-    if row:
-        return row["id"]
-    cur = db.execute(
-        "INSERT INTO tags (text, category) VALUES (?, ?)", (text, category)
+    existing = (
+        db.table("tags")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("text", text)
+        .eq("category", category)
+        .execute()
+        .data
     )
-    return cur.lastrowid
+    if existing:
+        return existing[0]["id"]
+    created = (
+        db.table("tags")
+        .insert({"user_id": user_id, "text": text, "category": category})
+        .select()
+        .execute()
+        .data
+    )
+    return created[0]["id"]
 
 
-def distinct_values(db, column, seed):
-    rows = db.execute(
-        f"SELECT DISTINCT {column} FROM signals WHERE {column} IS NOT NULL AND {column} != ''"
-    ).fetchall()
-    values = {r[column] for r in rows}
+def distinct_values(db, user_id, column, seed):
+    rows = db.table("signals").select(column).eq("user_id", user_id).execute().data
+    values = {r[column] for r in rows if r.get(column)}
     values.update(seed)
     return sorted(values)
 
@@ -174,46 +212,54 @@ def resolve_select_or_other(form, select_name, other_name):
     return (form.get(select_name) or "").strip()
 
 
-def set_signal_tags(db, signal_id, category, raw_text):
-    db.execute(
-        """DELETE FROM signal_tags WHERE signal_id = ? AND tag_id IN
-           (SELECT id FROM tags WHERE category = ?)""",
-        (signal_id, category),
-    )
+def set_signal_tags(db, user_id, signal_id, category, raw_text):
+    tag_ids_in_category = [
+        t["id"]
+        for t in db.table("tags").select("id").eq("user_id", user_id).eq("category", category).execute().data
+    ]
+    if tag_ids_in_category:
+        db.table("signal_tags").delete().eq("signal_id", signal_id).in_("tag_id", tag_ids_in_category).execute()
     for text in parse_tag_list(raw_text):
-        tag_id = get_or_create_tag(db, text, category)
-        db.execute(
-            "INSERT OR IGNORE INTO signal_tags (signal_id, tag_id) VALUES (?, ?)",
-            (signal_id, tag_id),
-        )
+        tag_id = get_or_create_tag(db, user_id, text, category)
+        db.table("signal_tags").upsert(
+            {"signal_id": signal_id, "tag_id": tag_id, "user_id": user_id},
+            on_conflict="signal_id,tag_id",
+        ).execute()
 
 
-def set_signal_hypothesis(db, signal_id, form):
-    db.execute("DELETE FROM signal_hypotheses WHERE signal_id = ?", (signal_id,))
+def set_signal_hypothesis(db, user_id, signal_id, form):
+    db.table("signal_hypotheses").delete().eq("signal_id", signal_id).execute()
     relation = form.get("relation")
     new_hyp_statement = form.get("new_hypothesis", "").strip()
     existing_hyp_id = form.get("hypothesis_id")
     hypothesis_id = None
     if new_hyp_statement:
-        existing_hyp = db.execute(
-            "SELECT id FROM hypotheses WHERE statement = ?", (new_hyp_statement,)
-        ).fetchone()
+        existing_hyp = (
+            db.table("hypotheses")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("statement", new_hyp_statement)
+            .execute()
+            .data
+        )
         if existing_hyp:
-            hypothesis_id = existing_hyp["id"]
+            hypothesis_id = existing_hyp[0]["id"]
         else:
-            cur2 = db.execute(
-                "INSERT INTO hypotheses (statement, status) VALUES (?, 'exploring')",
-                (new_hyp_statement,),
+            created = (
+                db.table("hypotheses")
+                .insert({"user_id": user_id, "statement": new_hyp_statement, "status": "exploring"})
+                .select()
+                .execute()
+                .data
             )
-            hypothesis_id = cur2.lastrowid
+            hypothesis_id = created[0]["id"]
     elif existing_hyp_id:
-        hypothesis_id = int(existing_hyp_id)
+        hypothesis_id = existing_hyp_id
 
     if hypothesis_id and relation:
-        db.execute(
-            "INSERT INTO signal_hypotheses (signal_id, hypothesis_id, relation) VALUES (?, ?, ?)",
-            (signal_id, hypothesis_id, relation),
-        )
+        db.table("signal_hypotheses").insert(
+            {"signal_id": signal_id, "hypothesis_id": hypothesis_id, "user_id": user_id, "relation": relation}
+        ).execute()
 
 
 SIGNAL_FORM_TEMPLATE = """
@@ -281,45 +327,55 @@ function validateSignalType() {
 
 
 @app.route("/signals/new", methods=["GET", "POST"])
+@login_required
 def new_signal():
-    db = get_db()
+    db = get_supabase()
+    user_id = g.user.id
     if request.method == "POST":
         form = request.form
         signal_type = resolve_select_or_other(form, "signal_type_select", "signal_type_other")
         channel = resolve_select_or_other(form, "channel_select", "channel_other") or None
-        cur = db.execute(
-            """INSERT INTO signals
-               (date, person, organization, signal_type, role_opportunity, channel,
-                note, learning, problem_heard, interest_signal, next_action)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                form["date"],
-                form["person"],
-                form.get("organization") or None,
-                signal_type,
-                form.get("role_opportunity") or None,
-                channel,
-                form["note"],
-                form.get("learning") or None,
-                form.get("problem_heard") or None,
-                form.get("interest_signal") or None,
-                form.get("next_action") or None,
-            ),
+        created = (
+            db.table("signals")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "date": form["date"],
+                    "person": form["person"],
+                    "organization": form.get("organization") or None,
+                    "signal_type": signal_type,
+                    "role_opportunity": form.get("role_opportunity") or None,
+                    "channel": channel,
+                    "note": form["note"],
+                    "learning": form.get("learning") or None,
+                    "problem_heard": form.get("problem_heard") or None,
+                    "interest_signal": form.get("interest_signal") or None,
+                    "next_action": form.get("next_action") or None,
+                }
+            )
+            .select()
+            .execute()
+            .data
         )
-        signal_id = cur.lastrowid
+        signal_id = created[0]["id"]
 
-        set_signal_tags(db, signal_id, "problem", form.get("problem_tags", ""))
-        set_signal_tags(db, signal_id, "role", form.get("role_tags", ""))
-        set_signal_hypothesis(db, signal_id, form)
+        set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
+        set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
+        set_signal_hypothesis(db, user_id, signal_id, form)
 
-        db.commit()
         return redirect(url_for("feed"))
 
-    signal_types = distinct_values(db, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, "channel", CHANNEL_SEED)
-    hypotheses = db.execute(
-        "SELECT id, statement FROM hypotheses WHERE status != 'retired' ORDER BY created_at DESC"
-    ).fetchall()
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
+    hypotheses = (
+        db.table("hypotheses")
+        .select("id, statement")
+        .eq("user_id", user_id)
+        .neq("status", "retired")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
     return render_template_string(
         page("Ny signal", SIGNAL_FORM_TEMPLATE),
         heading="Ny signal",
@@ -348,66 +404,74 @@ def new_signal():
     )
 
 
-@app.route("/signals/<int:signal_id>/edit", methods=["GET", "POST"])
+@app.route("/signals/<uuid:signal_id>/edit", methods=["GET", "POST"])
+@login_required
 def edit_signal(signal_id):
-    db = get_db()
-    signal = db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
-    if signal is None:
+    db = get_supabase()
+    user_id = g.user.id
+    signal_id = str(signal_id)
+    signal_rows = db.table("signals").select("*").eq("id", signal_id).eq("user_id", user_id).execute().data
+    if not signal_rows:
         return redirect(url_for("feed"))
+    signal = signal_rows[0]
 
     if request.method == "POST":
         form = request.form
         signal_type = resolve_select_or_other(form, "signal_type_select", "signal_type_other")
         channel = resolve_select_or_other(form, "channel_select", "channel_other") or None
-        db.execute(
-            """UPDATE signals SET
-               date = ?, person = ?, organization = ?, signal_type = ?, role_opportunity = ?,
-               channel = ?, note = ?, learning = ?, problem_heard = ?, interest_signal = ?,
-               next_action = ?
-               WHERE id = ?""",
-            (
-                form["date"],
-                form["person"],
-                form.get("organization") or None,
-                signal_type,
-                form.get("role_opportunity") or None,
-                channel,
-                form["note"],
-                form.get("learning") or None,
-                form.get("problem_heard") or None,
-                form.get("interest_signal") or None,
-                form.get("next_action") or None,
-                signal_id,
-            ),
-        )
+        db.table("signals").update(
+            {
+                "date": form["date"],
+                "person": form["person"],
+                "organization": form.get("organization") or None,
+                "signal_type": signal_type,
+                "role_opportunity": form.get("role_opportunity") or None,
+                "channel": channel,
+                "note": form["note"],
+                "learning": form.get("learning") or None,
+                "problem_heard": form.get("problem_heard") or None,
+                "interest_signal": form.get("interest_signal") or None,
+                "next_action": form.get("next_action") or None,
+            }
+        ).eq("id", signal_id).eq("user_id", user_id).execute()
 
-        set_signal_tags(db, signal_id, "problem", form.get("problem_tags", ""))
-        set_signal_tags(db, signal_id, "role", form.get("role_tags", ""))
-        set_signal_hypothesis(db, signal_id, form)
+        set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
+        set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
+        set_signal_hypothesis(db, user_id, signal_id, form)
 
-        db.commit()
         return redirect(url_for("feed"))
 
-    signal_types = distinct_values(db, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, "channel", CHANNEL_SEED)
-    hypotheses = db.execute(
-        "SELECT id, statement FROM hypotheses WHERE status != 'retired' ORDER BY created_at DESC"
-    ).fetchall()
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
+    hypotheses = (
+        db.table("hypotheses")
+        .select("id, statement")
+        .eq("user_id", user_id)
+        .neq("status", "retired")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
 
-    tag_rows = db.execute(
-        """SELECT t.text, t.category FROM signal_tags st
-           JOIN tags t ON t.id = st.tag_id
-           WHERE st.signal_id = ?""",
-        (signal_id,),
-    ).fetchall()
-    problem_tags_value = ", ".join(r["text"] for r in tag_rows if r["category"] == "problem")
-    role_tags_value = ", ".join(r["text"] for r in tag_rows if r["category"] == "role")
+    tag_rows = (
+        db.table("signal_tags")
+        .select("tags(text, category)")
+        .eq("signal_id", signal_id)
+        .execute()
+        .data
+    )
+    problem_tags_value = ", ".join(r["tags"]["text"] for r in tag_rows if r["tags"]["category"] == "problem")
+    role_tags_value = ", ".join(r["tags"]["text"] for r in tag_rows if r["tags"]["category"] == "role")
 
-    hyp_link = db.execute(
-        """SELECT hypothesis_id, relation FROM signal_hypotheses
-           WHERE signal_id = ? ORDER BY hypothesis_id DESC LIMIT 1""",
-        (signal_id,),
-    ).fetchone()
+    hyp_link_rows = (
+        db.table("signal_hypotheses")
+        .select("hypothesis_id, relation")
+        .eq("signal_id", signal_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    hyp_link = hyp_link_rows[0] if hyp_link_rows else None
 
     signal_type_known = signal["signal_type"] in signal_types
     channel_known = not signal["channel"] or signal["channel"] in channels
@@ -487,34 +551,45 @@ FEED_TEMPLATE = """
 
 
 @app.route("/")
+@login_required
 def feed():
-    db = get_db()
-    signals = db.execute(
-        "SELECT * FROM signals ORDER BY date DESC, created_at DESC"
-    ).fetchall()
+    db = get_supabase()
+    user_id = g.user.id
+    signals = (
+        db.table("signals")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("date", desc=True)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
     signal_ids = [s["id"] for s in signals]
 
     tags_by_signal = {}
     hyps_by_signal = {}
     if signal_ids:
-        placeholders = ",".join("?" * len(signal_ids))
-        tag_rows = db.execute(
-            f"""SELECT st.signal_id, t.text, t.category FROM signal_tags st
-                JOIN tags t ON t.id = st.tag_id
-                WHERE st.signal_id IN ({placeholders})""",
-            signal_ids,
-        ).fetchall()
+        tag_rows = (
+            db.table("signal_tags")
+            .select("signal_id, tags(text, category)")
+            .in_("signal_id", signal_ids)
+            .execute()
+            .data
+        )
         for r in tag_rows:
-            tags_by_signal.setdefault(r["signal_id"], []).append(r)
+            tags_by_signal.setdefault(r["signal_id"], []).append(r["tags"])
 
-        hyp_rows = db.execute(
-            f"""SELECT sh.signal_id, sh.relation, h.statement FROM signal_hypotheses sh
-                JOIN hypotheses h ON h.id = sh.hypothesis_id
-                WHERE sh.signal_id IN ({placeholders})""",
-            signal_ids,
-        ).fetchall()
+        hyp_rows = (
+            db.table("signal_hypotheses")
+            .select("signal_id, relation, hypotheses(statement)")
+            .in_("signal_id", signal_ids)
+            .execute()
+            .data
+        )
         for r in hyp_rows:
-            hyps_by_signal.setdefault(r["signal_id"], []).append(r)
+            hyps_by_signal.setdefault(r["signal_id"], []).append(
+                {"relation": r["relation"], "statement": r["hypotheses"]["statement"]}
+            )
 
     return render_template_string(
         page("Signal Feed", FEED_TEMPLATE),
@@ -524,11 +599,13 @@ def feed():
     )
 
 
-@app.route("/signals/<int:signal_id>/done", methods=["POST"])
+@app.route("/signals/<uuid:signal_id>/done", methods=["POST"])
+@login_required
 def mark_next_action_done(signal_id):
-    db = get_db()
-    db.execute("UPDATE signals SET next_action_done = 1 WHERE id = ?", (signal_id,))
-    db.commit()
+    db = get_supabase()
+    db.table("signals").update({"next_action_done": True}).eq("id", str(signal_id)).eq(
+        "user_id", g.user.id
+    ).execute()
     return redirect(request.referrer or url_for("feed"))
 
 
@@ -573,33 +650,50 @@ HYPOTHESIS_DETAIL_TEMPLATE = """
 
 
 @app.route("/hypotheses")
+@login_required
 def hypotheses_list():
-    db = get_db()
-    rows = db.execute(
-        """SELECT h.*,
-                  SUM(CASE WHEN sh.relation = 'supports' THEN 1 ELSE 0 END) AS supports_count,
-                  SUM(CASE WHEN sh.relation = 'contradicts' THEN 1 ELSE 0 END) AS contradicts_count
-           FROM hypotheses h
-           LEFT JOIN signal_hypotheses sh ON sh.hypothesis_id = h.id
-           GROUP BY h.id
-           ORDER BY h.created_at DESC"""
-    ).fetchall()
+    db = get_supabase()
+    rows = (
+        db.table("hypotheses")
+        .select("*, signal_hypotheses(relation)")
+        .eq("user_id", g.user.id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    for h in rows:
+        relations = [sh["relation"] for sh in h.get("signal_hypotheses", [])]
+        h["supports_count"] = relations.count("supports")
+        h["contradicts_count"] = relations.count("contradicts")
     return render_template_string(page("Hypoteser", HYPOTHESES_LIST_TEMPLATE), hypotheses=rows)
 
 
-@app.route("/hypotheses/<int:hypothesis_id>")
+@app.route("/hypotheses/<uuid:hypothesis_id>")
+@login_required
 def hypothesis_detail(hypothesis_id):
-    db = get_db()
-    hyp = db.execute("SELECT * FROM hypotheses WHERE id = ?", (hypothesis_id,)).fetchone()
-    evidence = db.execute(
-        """SELECT s.*, sh.relation FROM signal_hypotheses sh
-           JOIN signals s ON s.id = sh.signal_id
-           WHERE sh.hypothesis_id = ?
-           ORDER BY s.date DESC""",
-        (hypothesis_id,),
-    ).fetchall()
-    supporting = [e for e in evidence if e["relation"] == "supports"]
-    contradicting = [e for e in evidence if e["relation"] == "contradicts"]
+    db = get_supabase()
+    user_id = g.user.id
+    hypothesis_id = str(hypothesis_id)
+    hyp_rows = (
+        db.table("hypotheses").select("*").eq("id", hypothesis_id).eq("user_id", user_id).execute().data
+    )
+    if not hyp_rows:
+        return redirect(url_for("hypotheses_list"))
+    hyp = hyp_rows[0]
+
+    evidence = (
+        db.table("signal_hypotheses")
+        .select("relation, signals(date, person, note)")
+        .eq("hypothesis_id", hypothesis_id)
+        .execute()
+        .data
+    )
+    supporting = sorted(
+        (e["signals"] for e in evidence if e["relation"] == "supports"), key=lambda s: s["date"], reverse=True
+    )
+    contradicting = sorted(
+        (e["signals"] for e in evidence if e["relation"] == "contradicts"), key=lambda s: s["date"], reverse=True
+    )
     return render_template_string(
         page("Hypotes", HYPOTHESIS_DETAIL_TEMPLATE),
         hyp=hyp,
@@ -608,12 +702,14 @@ def hypothesis_detail(hypothesis_id):
     )
 
 
-@app.route("/hypotheses/<int:hypothesis_id>/status", methods=["POST"])
+@app.route("/hypotheses/<uuid:hypothesis_id>/status", methods=["POST"])
+@login_required
 def update_hypothesis_status(hypothesis_id):
-    db = get_db()
+    db = get_supabase()
     status = request.form["status"]
-    db.execute("UPDATE hypotheses SET status = ? WHERE id = ?", (status, hypothesis_id))
-    db.commit()
+    db.table("hypotheses").update({"status": status}).eq("id", str(hypothesis_id)).eq(
+        "user_id", g.user.id
+    ).execute()
     return redirect(url_for("hypothesis_detail", hypothesis_id=hypothesis_id))
 
 
@@ -642,48 +738,74 @@ REVIEW_TEMPLATE = """
 
 
 @app.route("/review")
+@login_required
 def review():
-    db = get_db()
-    week_signals = db.execute(
-        "SELECT * FROM signals WHERE date >= date('now', '-7 days') ORDER BY date DESC"
-    ).fetchall()
+    db = get_supabase()
+    user_id = g.user.id
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+    week_signals = (
+        db.table("signals")
+        .select("*")
+        .eq("user_id", user_id)
+        .gte("date", week_ago)
+        .order("date", desc=True)
+        .execute()
+        .data
+    )
     week_ids = [s["id"] for s in week_signals]
 
     top_problem_tags = []
     top_role_tags = []
     hyps_with_new_evidence = []
     if week_ids:
-        placeholders = ",".join("?" * len(week_ids))
-        top_problem_tags = db.execute(
-            f"""SELECT t.text, COUNT(*) AS n FROM signal_tags st
-                JOIN tags t ON t.id = st.tag_id
-                WHERE st.signal_id IN ({placeholders}) AND t.category = 'problem'
-                GROUP BY t.text ORDER BY n DESC LIMIT 10""",
-            week_ids,
-        ).fetchall()
-        top_role_tags = db.execute(
-            f"""SELECT t.text, COUNT(*) AS n FROM signal_tags st
-                JOIN tags t ON t.id = st.tag_id
-                WHERE st.signal_id IN ({placeholders}) AND t.category = 'role'
-                GROUP BY t.text ORDER BY n DESC LIMIT 10""",
-            week_ids,
-        ).fetchall()
-        hyps_with_new_evidence = db.execute(
-            f"""SELECT h.id, h.statement, h.status,
-                       SUM(CASE WHEN sh.relation = 'supports' THEN 1 ELSE 0 END) AS new_supports,
-                       SUM(CASE WHEN sh.relation = 'contradicts' THEN 1 ELSE 0 END) AS new_contradicts
-                FROM signal_hypotheses sh
-                JOIN hypotheses h ON h.id = sh.hypothesis_id
-                WHERE sh.signal_id IN ({placeholders})
-                GROUP BY h.id""",
-            week_ids,
-        ).fetchall()
+        tag_rows = (
+            db.table("signal_tags")
+            .select("signal_id, tags(text, category)")
+            .in_("signal_id", week_ids)
+            .execute()
+            .data
+        )
+        problem_counts, role_counts = {}, {}
+        for r in tag_rows:
+            t = r["tags"]
+            bucket = problem_counts if t["category"] == "problem" else role_counts
+            bucket[t["text"]] = bucket.get(t["text"], 0) + 1
+        top_problem_tags = [
+            {"text": k, "n": v} for k, v in sorted(problem_counts.items(), key=lambda kv: -kv[1])
+        ][:10]
+        top_role_tags = [
+            {"text": k, "n": v} for k, v in sorted(role_counts.items(), key=lambda kv: -kv[1])
+        ][:10]
 
-    outstanding_actions = db.execute(
-        """SELECT * FROM signals
-           WHERE next_action IS NOT NULL AND next_action != '' AND next_action_done = 0
-           ORDER BY date DESC"""
-    ).fetchall()
+        hyp_rows = (
+            db.table("signal_hypotheses")
+            .select("hypothesis_id, relation, hypotheses(id, statement)")
+            .in_("signal_id", week_ids)
+            .execute()
+            .data
+        )
+        hyp_agg = {}
+        for r in hyp_rows:
+            hid = r["hypothesis_id"]
+            entry = hyp_agg.setdefault(
+                hid, {"id": hid, "statement": r["hypotheses"]["statement"], "new_supports": 0, "new_contradicts": 0}
+            )
+            if r["relation"] == "supports":
+                entry["new_supports"] += 1
+            else:
+                entry["new_contradicts"] += 1
+        hyps_with_new_evidence = list(hyp_agg.values())
+
+    outstanding_actions = (
+        db.table("signals")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("next_action_done", False)
+        .order("date", desc=True)
+        .execute()
+        .data
+    )
+    outstanding_actions = [s for s in outstanding_actions if s.get("next_action")]
 
     return render_template_string(
         page("Veckoöversikt", REVIEW_TEMPLATE),
@@ -696,5 +818,4 @@ def review():
 
 
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=5050, debug=False)

@@ -1,6 +1,11 @@
 # Databases (may contain personal data)
 *.db
 
+# Secrets - never commit real Supabase/Flask credentials
+.env
+.env.local
+.vercel
+
 # Python
 __pycache__/
 *.pyc

@@ -1,0 +1,6 @@
+# Databases (may contain personal data)
+*.db
+
+# Python
+__pycache__/
+*.pyc

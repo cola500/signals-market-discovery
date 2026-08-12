@@ -158,7 +158,19 @@ HEAD_EXTRAS = """
 
 SPLASH = """
 <div id="splash"><img src="/app-icon.svg"></div>
-<script>window.addEventListener('load',()=>{setTimeout(()=>{const s=document.getElementById('splash');if(s){s.style.opacity='0';setTimeout(()=>s.remove(),400)}},400)})</script>
+<script>
+if (sessionStorage.getItem('signals_splash_shown')) {
+  document.getElementById('splash').remove();
+} else {
+  sessionStorage.setItem('signals_splash_shown', '1');
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      const s = document.getElementById('splash');
+      if (s) { s.style.opacity = '0'; setTimeout(() => s.remove(), 400); }
+    }, 400);
+  });
+}
+</script>
 """
 
 

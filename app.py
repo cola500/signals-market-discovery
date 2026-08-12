@@ -137,7 +137,7 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 NAV = """
 <nav>
   {% if session.get('access_token') %}
-    <a href="{{ url_for('feed') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>Feed</span></a>
+    <a href="{{ url_for('feed') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>Flöde</span></a>
     <a href="/signals/new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>+ Ny signal</span></a>
     <a href="/hypotheses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7 3 3 0 0 1 1 2.3h6a3 3 0 0 1 1-2.3A7 7 0 0 0 12 2z"></path></svg><span>Hypoteser</span></a>
     <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Veckoöversikt</span></a>
@@ -581,7 +581,6 @@ def edit_signal(signal_id):
 
 FEED_TEMPLATE = """
 <h1>Signals flöde</h1>
-<p><a href="{{ url_for('new_signal') }}">+ Ny signal</a></p>
 {% if not signals %}
 <p>Inga signaler ännu.</p>
 {% endif %}

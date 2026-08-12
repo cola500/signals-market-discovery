@@ -119,7 +119,14 @@ button:active{transform:scale(.97)}
 .btn-danger{background:var(--danger-500);border:none;color:#fff}
 .btn-danger:hover{background:#B5294A}
 .actions-row{display:flex;gap:.6rem;margin-bottom:1rem}
-.actions-row form{margin:0}
+.actions-row form{margin:0;flex:1;display:flex}
+.actions-row button{flex:1;text-align:center;justify-content:center}
+.actions-row a{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;padding:.75rem 1rem;font-size:1rem;font-weight:700;border-radius:var(--radius-md);min-height:44px;border:1px solid var(--ink-200);background:var(--ink-50);color:var(--ink-950);text-decoration:none;transition:background .12s var(--ease),transform .12s var(--ease)}
+.actions-row a:visited{color:var(--ink-950)}
+.actions-row a:hover{background:var(--ink-100);text-decoration:none}
+.actions-row a:active{transform:scale(.97)}
+.actions-row .btn-accent{background:var(--coral-500);border:none;color:#fff}
+.actions-row .btn-accent:hover{background:var(--coral-600)}
 fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
@@ -614,20 +621,19 @@ FEED_TEMPLATE = """
     {% endif %}
     {% if s['next_action'] %}
       <p class="next-action {{ 'done' if s['next_action_done'] else '' }}">
-        Nästa steg: {{ s['next_action'] }}
-        {% if not s['next_action_done'] %}
-          <form method="post" action="{{ url_for('mark_next_action_done', signal_id=s['id']) }}" style="display:inline">
-            <button type="submit">Klarmarkera</button>
-          </form>
-        {% else %}
-          (klar)
-          <form method="post" action="{{ url_for('unmark_next_action_done', signal_id=s['id']) }}" style="display:inline">
-            <button type="submit">Ångra</button>
-          </form>
-        {% endif %}
+        Nästa steg: {{ s['next_action'] }}{% if s['next_action_done'] %} (klar){% endif %}
       </p>
     {% endif %}
     <div class="actions-row">
+      {% if s['next_action'] and not s['next_action_done'] %}
+        <form method="post" action="{{ url_for('mark_next_action_done', signal_id=s['id']) }}">
+          <button type="submit" class="btn-accent">Klarmarkera</button>
+        </form>
+      {% elif s['next_action'] %}
+        <form method="post" action="{{ url_for('unmark_next_action_done', signal_id=s['id']) }}">
+          <button type="submit">Ångra</button>
+        </form>
+      {% endif %}
       <a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a>
       <form method="post" action="{{ url_for('delete_signal', signal_id=s['id']) }}"
             onsubmit="return confirm('Ta bort den här signalen? Det går inte att ångra.');">

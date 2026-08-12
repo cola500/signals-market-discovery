@@ -618,7 +618,12 @@ FEED_TEMPLATE = """
           <form method="post" action="{{ url_for('mark_next_action_done', signal_id=s['id']) }}" style="display:inline">
             <button type="submit">Klarmarkera</button>
           </form>
-        {% else %}(klar){% endif %}
+        {% else %}
+          (klar)
+          <form method="post" action="{{ url_for('unmark_next_action_done', signal_id=s['id']) }}" style="display:inline">
+            <button type="submit">Ångra</button>
+          </form>
+        {% endif %}
       </p>
     {% endif %}
     <p><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a></p>
@@ -682,6 +687,16 @@ def feed():
 def mark_next_action_done(signal_id):
     db = get_supabase()
     db.table("signals").update({"next_action_done": True}).eq("id", str(signal_id)).eq(
+        "user_id", g.user.id
+    ).execute()
+    return redirect(request.referrer or url_for("feed"))
+
+
+@app.route("/signals/<uuid:signal_id>/undone", methods=["POST"])
+@login_required
+def unmark_next_action_done(signal_id):
+    db = get_supabase()
+    db.table("signals").update({"next_action_done": False}).eq("id", str(signal_id)).eq(
         "user_id", g.user.id
     ).execute()
     return redirect(request.referrer or url_for("feed"))

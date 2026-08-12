@@ -203,6 +203,7 @@ def app_icon():
 
 LOGIN_TEMPLATE = """
 <h1>Logga in</h1>
+<p style="margin:-0.5rem 0 1.5rem;color:var(--ink-600);font-size:0.9rem">Logga signaler från din jobbsökning — kaffemöten, rekryterarkontakt, intervjuer — och se vilka hypoteser de stödjer eller motsäger.</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post">
   <label>E-post<input type="email" name="email" required autofocus></label>

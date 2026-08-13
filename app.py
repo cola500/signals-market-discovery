@@ -108,6 +108,7 @@ nav button:hover{color:var(--ink-950)}
 nav button svg{width:20px;height:20px;flex-shrink:0}
 form label{display:block;margin-bottom:1rem;font-weight:600;font-size:.875rem;color:var(--ink-950)}
 input,select,textarea{width:100%;padding:.7rem .85rem;box-sizing:border-box;font-size:1rem;font-family:inherit;border:1px solid var(--ink-200);border-radius:var(--radius-md);background:var(--white);margin-top:.4rem;transition:border-color .12s var(--ease),box-shadow .12s var(--ease)}
+input[type="date"]{-webkit-appearance:none;appearance:none}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--coral-500);box-shadow:0 0 0 3px rgba(255,106,71,.25)}
 textarea{min-height:6rem;resize:vertical}
 button{padding:.75rem 1.25rem;font-size:1rem;font-family:inherit;font-weight:700;border-radius:var(--radius-md);min-height:44px;border:1px solid var(--ink-200);background:var(--ink-50);color:var(--ink-950);cursor:pointer;transition:background .12s var(--ease),transform .12s var(--ease)}
@@ -128,6 +129,11 @@ button:active{transform:scale(.97)}
 .actions-row .btn-accent{background:var(--coral-500);border:none;color:#fff}
 .actions-row .btn-accent:hover{background:var(--coral-600)}
 fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
+.suggestions{list-style:none;margin:.3rem 0 0;padding:0;background:var(--white);border:1px solid var(--ink-200);border-radius:var(--radius-md);box-shadow:var(--shadow-md);max-height:12rem;overflow-y:auto}
+.suggestions:empty{display:none;margin:0;border:none;box-shadow:none}
+.suggestions li{padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
+.suggestions li:active{background:var(--ink-50)}
+.suggestions li+li{border-top:1px solid var(--ink-100)}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
 .feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
@@ -367,6 +373,25 @@ def distinct_values(db, user_id, column, seed):
     return sorted(values)
 
 
+def recent_distinct_values(db, user_id, column):
+    rows = (
+        db.table("signals")
+        .select(f"{column}, date")
+        .eq("user_id", user_id)
+        .order("date", desc=True)
+        .execute()
+        .data
+    )
+    seen = set()
+    values = []
+    for r in rows:
+        value = r.get(column)
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values
+
+
 def resolve_select_or_other(form, select_name, other_name):
     other = (form.get(other_name) or "").strip()
     if other:
@@ -428,8 +453,18 @@ SIGNAL_FORM_TEMPLATE = """
 <h1>{{ heading }}</h1>
 <form method="post" action="{{ form_action }}" onsubmit="return validateSignalType()">
   <label>Datum *<input type="date" name="date" value="{{ date_value }}" required></label>
-  <label>Person *<input type="text" name="person" value="{{ person_value }}" required></label>
-  <label>Organisation<input type="text" name="organization" value="{{ organization_value }}"></label>
+  <label>Person *
+    <div class="autocomplete-field">
+      <input type="text" name="person" id="person" value="{{ person_value }}" autocomplete="off" required>
+      <ul class="suggestions" id="person-suggestions" role="listbox"></ul>
+    </div>
+  </label>
+  <label>Organisation
+    <div class="autocomplete-field">
+      <input type="text" name="organization" id="organization" value="{{ organization_value }}" autocomplete="off">
+      <ul class="suggestions" id="organization-suggestions" role="listbox"></ul>
+    </div>
+  </label>
   <label>Signal-typ *
     <select name="signal_type_select">
       <option value="">-- välj --</option>
@@ -484,6 +519,45 @@ function validateSignalType() {
   }
   return true;
 }
+
+function setupAutocomplete(inputId, suggestionsId, values) {
+  var input = document.getElementById(inputId);
+  var list = document.getElementById(suggestionsId);
+
+  function render(query) {
+    list.innerHTML = '';
+    if (!query) return;
+    var lower = query.toLowerCase();
+    var prefixMatches = [];
+    var otherMatches = [];
+    values.forEach(function(value) {
+      var idx = value.toLowerCase().indexOf(lower);
+      if (idx === 0) prefixMatches.push(value);
+      else if (idx > 0) otherMatches.push(value);
+    });
+    prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value) {
+      var li = document.createElement('li');
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        input.value = value;
+        list.innerHTML = '';
+      });
+      list.appendChild(li);
+    });
+  }
+
+  input.addEventListener('input', function() {
+    render(input.value.trim());
+  });
+  input.addEventListener('blur', function() {
+    setTimeout(function() { list.innerHTML = ''; }, 200);
+  });
+}
+
+setupAutocomplete('person', 'person-suggestions', {{ people|tojson }});
+setupAutocomplete('organization', 'organization-suggestions', {{ organizations|tojson }});
 </script>
 """
 
@@ -529,6 +603,8 @@ def new_signal():
 
     signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
     channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
+    people = recent_distinct_values(db, user_id, "person")
+    organizations = recent_distinct_values(db, user_id, "organization")
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -546,6 +622,8 @@ def new_signal():
         date_value=date.today().isoformat(),
         person_value="",
         organization_value="",
+        people=people,
+        organizations=organizations,
         signal_types=signal_types,
         signal_type_select_value="",
         signal_type_other_value="",
@@ -605,6 +683,8 @@ def edit_signal(signal_id):
 
     signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
     channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
+    people = recent_distinct_values(db, user_id, "person")
+    organizations = recent_distinct_values(db, user_id, "organization")
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -646,6 +726,8 @@ def edit_signal(signal_id):
         date_value=signal["date"],
         person_value=signal["person"],
         organization_value=signal["organization"] or "",
+        people=people,
+        organizations=organizations,
         signal_types=signal_types,
         signal_type_select_value=signal["signal_type"] if signal_type_known else "",
         signal_type_other_value="" if signal_type_known else signal["signal_type"],

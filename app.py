@@ -168,7 +168,7 @@ NAV = """
     <a href="{{ url_for('feed') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg><span>Flöde</span></a>
     <a href="/signals/new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>+ Ny signal</span></a>
     <a href="/hypotheses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7 3 3 0 0 1 1 2.3h6a3 3 0 0 1 1-2.3A7 7 0 0 0 12 2z"></path></svg><span>Hypoteser</span></a>
-    <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Veckoöversikt</span></a>
+    <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Översikt</span></a>
     <form method="post" action="{{ url_for('logout') }}"><button type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span>Logga ut</span></button></form>
   {% else %}
     <a href="{{ url_for('login') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg><span>Logga in</span></a>
@@ -1052,8 +1052,13 @@ def delete_hypothesis(hypothesis_id):
 
 
 REVIEW_TEMPLATE = """
-<h1>Veckoöversikt</h1>
-<p>{{ week_count }} signaler senaste 7 dagarna.</p>
+<h1>Översikt</h1>
+<div class="actions-row">
+{% for key, opt in range_options.items() %}
+  <a href="{{ url_for('review', range=key) }}" class="{{ 'btn-accent' if key == selected_range else '' }}">{{ opt['label'] }}</a>
+{% endfor %}
+</div>
+<p>{{ range_count }} signaler {{ range_text }}.</p>
 
 <h2>Mest frekventa problem-taggar</h2>
 <ul>{% for t in top_problem_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
@@ -1061,7 +1066,7 @@ REVIEW_TEMPLATE = """
 <h2>Mest frekventa roll-taggar</h2>
 <ul>{% for t in top_role_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
 
-<h2>Hypoteser med ny evidens denna vecka</h2>
+<h2>Hypoteser med ny evidens {{ range_text }}</h2>
 <ul>
 {% for h in hyps_with_new_evidence %}
   <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a> — +{{ h['new_supports'] }} stödjer, +{{ h['new_contradicts'] }} motsäger</li>
@@ -1075,31 +1080,40 @@ REVIEW_TEMPLATE = """
 """
 
 
+REVIEW_RANGE_OPTIONS = {
+    "week": {"label": "Vecka", "days": 7, "text": "senaste 7 dagarna"},
+    "month": {"label": "Månad", "days": 30, "text": "senaste 30 dagarna"},
+    "quarter": {"label": "3 månader", "days": 90, "text": "senaste 90 dagarna"},
+    "all": {"label": "Alla", "days": None, "text": "hela tiden"},
+}
+
+
 @app.route("/review")
 @login_required
 def review():
     db = get_supabase()
     user_id = g.user.id
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
-    week_signals = (
-        db.table("signals")
-        .select("*")
-        .eq("user_id", user_id)
-        .gte("date", week_ago)
-        .order("date", desc=True)
-        .execute()
-        .data
-    )
-    week_ids = [s["id"] for s in week_signals]
+
+    selected_range = request.args.get("range", "week")
+    if selected_range not in REVIEW_RANGE_OPTIONS:
+        selected_range = "week"
+    range_days = REVIEW_RANGE_OPTIONS[selected_range]["days"]
+
+    range_query = db.table("signals").select("*").eq("user_id", user_id)
+    if range_days is not None:
+        range_start = (datetime.now(timezone.utc) - timedelta(days=range_days)).date().isoformat()
+        range_query = range_query.gte("date", range_start)
+    range_signals = range_query.order("date", desc=True).execute().data
+    range_ids = [s["id"] for s in range_signals]
 
     top_problem_tags = []
     top_role_tags = []
     hyps_with_new_evidence = []
-    if week_ids:
+    if range_ids:
         tag_rows = (
             db.table("signal_tags")
             .select("signal_id, tags(text, category)")
-            .in_("signal_id", week_ids)
+            .in_("signal_id", range_ids)
             .execute()
             .data
         )
@@ -1118,7 +1132,7 @@ def review():
         hyp_rows = (
             db.table("signal_hypotheses")
             .select("hypothesis_id, relation, hypotheses(id, statement)")
-            .in_("signal_id", week_ids)
+            .in_("signal_id", range_ids)
             .execute()
             .data
         )
@@ -1134,20 +1148,23 @@ def review():
                 entry["new_contradicts"] += 1
         hyps_with_new_evidence = list(hyp_agg.values())
 
-    outstanding_actions = (
+    outstanding_query = (
         db.table("signals")
         .select("*")
         .eq("user_id", user_id)
         .eq("next_action_done", False)
-        .order("date", desc=True)
-        .execute()
-        .data
     )
+    if range_days is not None:
+        outstanding_query = outstanding_query.gte("date", range_start)
+    outstanding_actions = outstanding_query.order("date", desc=True).execute().data
     outstanding_actions = [s for s in outstanding_actions if s.get("next_action")]
 
     return render_template_string(
-        page("Veckoöversikt", REVIEW_TEMPLATE),
-        week_count=len(week_signals),
+        page("Översikt", REVIEW_TEMPLATE),
+        range_options=REVIEW_RANGE_OPTIONS,
+        selected_range=selected_range,
+        range_text=REVIEW_RANGE_OPTIONS[selected_range]["text"],
+        range_count=len(range_signals),
         top_problem_tags=top_problem_tags,
         top_role_tags=top_role_tags,
         hyps_with_new_evidence=hyps_with_new_evidence,

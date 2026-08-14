@@ -1077,6 +1077,8 @@ REVIEW_TEMPLATE = """
 <ul>
 {% for s in outstanding_actions %}<li>{{ s['date'] }} — {{ s['person'] }}: {{ s['next_action'] }}</li>{% endfor %}
 </ul>
+
+<p><a href="{{ url_for('ideas') }}">Idé till appen</a></p>
 """
 
 
@@ -1170,6 +1172,46 @@ def review():
         hyps_with_new_evidence=hyps_with_new_evidence,
         outstanding_actions=outstanding_actions,
     )
+
+
+IDEA_TEMPLATE = """
+<h1>Idéer</h1>
+<form method="post">
+  <label>Idé<textarea name="idea" required autofocus></textarea></label>
+  <button type="submit" class="btn-primary">Spara</button>
+</form>
+
+{% if not ideas %}
+<p>Inga idéer ännu.</p>
+{% endif %}
+<ul class="feed">
+{% for i in ideas %}
+  <li><strong>{{ i['created_at'][:10] }}</strong><p>{{ i['idea'] }}</p></li>
+{% endfor %}
+</ul>
+"""
+
+
+@app.route("/ideas", methods=["GET", "POST"])
+@login_required
+def ideas():
+    db = get_supabase()
+    user_id = g.user.id
+    if request.method == "POST":
+        idea = request.form.get("idea", "").strip()
+        if idea:
+            db.table("ideas").insert({"user_id": user_id, "idea": idea}).execute()
+        return redirect(url_for("ideas"))
+
+    rows = (
+        db.table("ideas")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    return render_template_string(page("Idéer", IDEA_TEMPLATE), ideas=rows)
 
 
 if __name__ == "__main__":

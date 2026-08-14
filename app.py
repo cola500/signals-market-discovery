@@ -1310,9 +1310,26 @@ IDEA_TEMPLATE = """
         <button type="submit">−1</button>
       </form>
     </div>
+    <div class="actions-row">
+      <a href="{{ url_for('edit_idea', idea_id=i['id']) }}">Redigera</a>
+      <form method="post" action="{{ url_for('delete_idea', idea_id=i['id']) }}"
+            onsubmit="return confirm('Ta bort den här idén? Det går inte att ångra.');">
+        <button type="submit" class="btn-danger">Ta bort</button>
+      </form>
+    </div>
   </li>
 {% endfor %}
 </ul>
+"""
+
+IDEA_EDIT_TEMPLATE = """
+<p><a href="{{ url_for('ideas') }}">&larr; Tillbaka</a></p>
+<h1>Redigera idé</h1>
+{% if error %}<span class="error">{{ error }}</span>{% endif %}
+<form method="post" action="{{ url_for('edit_idea', idea_id=idea_id) }}">
+  <label>Idé<textarea name="idea" required autofocus>{{ idea_value }}</textarea></label>
+  <button type="submit" class="btn-primary">Spara ändringar</button>
+</form>
 """
 
 
@@ -1353,6 +1370,47 @@ def vote_idea(idea_id):
             "user_id", user_id
         ).execute()
 
+    return redirect(url_for("ideas"))
+
+
+@app.route("/ideas/<uuid:idea_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_idea(idea_id):
+    db = get_supabase()
+    user_id = g.user.id
+    idea_id = str(idea_id)
+    rows = db.table("ideas").select("*").eq("id", idea_id).eq("user_id", user_id).execute().data
+    if not rows:
+        return redirect(url_for("ideas"))
+    idea_row = rows[0]
+
+    if request.method == "POST":
+        idea = request.form.get("idea", "").strip()
+        if not idea:
+            return render_template_string(
+                page("Redigera idé", IDEA_EDIT_TEMPLATE),
+                idea_id=idea_id,
+                idea_value=idea,
+                error="Idén kan inte vara tom.",
+            )
+        db.table("ideas").update({"idea": idea}).eq("id", idea_id).eq("user_id", user_id).execute()
+        return redirect(url_for("ideas"))
+
+    return render_template_string(
+        page("Redigera idé", IDEA_EDIT_TEMPLATE),
+        idea_id=idea_id,
+        idea_value=idea_row["idea"],
+        error=None,
+    )
+
+
+@app.route("/ideas/<uuid:idea_id>/delete", methods=["POST"])
+@login_required
+def delete_idea(idea_id):
+    db = get_supabase()
+    user_id = g.user.id
+    idea_id = str(idea_id)
+    db.table("ideas").delete().eq("id", idea_id).eq("user_id", user_id).execute()
     return redirect(url_for("ideas"))
 
 

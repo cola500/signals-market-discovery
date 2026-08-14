@@ -138,6 +138,10 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
 .feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
 .badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
+.vote-row{display:flex;align-items:center;gap:.5rem;margin-top:.75rem}
+.vote-row form{margin:0}
+.vote-row button{padding:.4rem .9rem;min-height:auto}
+.vote-row .badge{margin:0;font-family:'JetBrains Mono',monospace}
 .tag{display:inline-block;border-radius:var(--radius-full);padding:.2rem .7rem;font-size:.8rem;font-weight:600;margin-right:.35rem}
 .tag.problem{background:var(--rose-100);color:var(--rose-text)}
 .tag.role{background:var(--teal-100);color:var(--teal-700)}
@@ -1186,7 +1190,20 @@ IDEA_TEMPLATE = """
 {% endif %}
 <ul class="feed">
 {% for i in ideas %}
-  <li><strong>{{ i['created_at'][:10] }}</strong><p>{{ i['idea'] }}</p></li>
+  <li>
+    <strong>{{ i['created_at'][:10] }}</strong><p>{{ i['idea'] }}</p>
+    <div class="vote-row">
+      <form method="post" action="{{ url_for('vote_idea', idea_id=i['id']) }}">
+        <input type="hidden" name="direction" value="up">
+        <button type="submit">+1</button>
+      </form>
+      <span class="badge">{{ i['score'] }}</span>
+      <form method="post" action="{{ url_for('vote_idea', idea_id=i['id']) }}">
+        <input type="hidden" name="direction" value="down">
+        <button type="submit">−1</button>
+      </form>
+    </div>
+  </li>
 {% endfor %}
 </ul>
 """
@@ -1207,11 +1224,29 @@ def ideas():
         db.table("ideas")
         .select("*")
         .eq("user_id", user_id)
+        .order("score", desc=True)
         .order("created_at", desc=True)
         .execute()
         .data
     )
     return render_template_string(page("Idéer", IDEA_TEMPLATE), ideas=rows)
+
+
+@app.route("/ideas/<uuid:idea_id>/vote", methods=["POST"])
+@login_required
+def vote_idea(idea_id):
+    db = get_supabase()
+    user_id = g.user.id
+    idea_id = str(idea_id)
+    delta = 1 if request.form.get("direction") == "up" else -1
+
+    row = db.table("ideas").select("score").eq("id", idea_id).eq("user_id", user_id).execute().data
+    if row:
+        db.table("ideas").update({"score": row[0]["score"] + delta}).eq("id", idea_id).eq(
+            "user_id", user_id
+        ).execute()
+
+    return redirect(url_for("ideas"))
 
 
 if __name__ == "__main__":

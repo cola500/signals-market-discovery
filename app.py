@@ -128,6 +128,9 @@ button:active{transform:scale(.97)}
 .actions-row a:active{transform:scale(.97)}
 .actions-row .btn-accent{background:var(--coral-500);border:none;color:#fff}
 .actions-row .btn-accent:hover{background:var(--coral-600)}
+.status-row{display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem}
+.status-row .btn-accent{background:var(--coral-500);border:none;color:#fff}
+.status-row .btn-accent:hover{background:var(--coral-600)}
 fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
 .suggestions{list-style:none;margin:.3rem 0 0;padding:0;background:var(--white);border:1px solid var(--ink-200);border-radius:var(--radius-md);box-shadow:var(--shadow-md);max-height:12rem;overflow-y:auto}
 .suggestions:empty{display:none;margin:0;border:none;box-shadow:none}
@@ -413,13 +416,6 @@ def recent_distinct_values(db, user_id, column):
     return values
 
 
-def resolve_select_or_other(form, select_name, other_name):
-    other = (form.get(other_name) or "").strip()
-    if other:
-        return other
-    return (form.get(select_name) or "").strip()
-
-
 def set_signal_tags(db, user_id, signal_id, category, raw_text):
     tag_ids_in_category = [
         t["id"]
@@ -472,7 +468,7 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
 
 SIGNAL_FORM_TEMPLATE = """
 <h1>{{ heading }}</h1>
-<form method="post" action="{{ form_action }}" onsubmit="return validateSignalType()">
+<form method="post" action="{{ form_action }}">
   <label>Datum *<input type="date" name="date" value="{{ date_value }}" required></label>
   <label>Person *
     <div class="autocomplete-field">
@@ -487,25 +483,23 @@ SIGNAL_FORM_TEMPLATE = """
     </div>
   </label>
   <label>Signal-typ *
-    <select name="signal_type_select">
-      <option value="">-- välj --</option>
-      {% for t in signal_types %}<option value="{{ t }}" {% if t == signal_type_select_value %}selected{% endif %}>{{ t }}</option>{% endfor %}
-    </select>
+    <div class="autocomplete-field">
+      <input type="text" name="signal_type" id="signal_type" value="{{ signal_type_value }}" autocomplete="off" required>
+      <ul class="suggestions" id="signal_type-suggestions" role="listbox"></ul>
+    </div>
   </label>
-  <label>...eller skriv egen signal-typ (åsidosätter valet ovan)<input type="text" name="signal_type_other" value="{{ signal_type_other_value }}"></label>
   <label>Roll/möjlighet (valfritt)
     <div class="autocomplete-field">
       <input type="text" name="role_opportunity" id="role_opportunity" value="{{ role_opportunity_value }}" autocomplete="off">
       <ul class="suggestions" id="role_opportunity-suggestions" role="listbox"></ul>
     </div>
   </label>
-  <label>Kanal
-    <select name="channel_select">
-      <option value="">-- ingen --</option>
-      {% for c in channels %}<option value="{{ c }}" {% if c == channel_select_value %}selected{% endif %}>{{ c }}</option>{% endfor %}
-    </select>
+  <label>Kanal (valfritt)
+    <div class="autocomplete-field">
+      <input type="text" name="channel" id="channel" value="{{ channel_value }}" autocomplete="off">
+      <ul class="suggestions" id="channel-suggestions" role="listbox"></ul>
+    </div>
   </label>
-  <label>...eller skriv egen kanal<input type="text" name="channel_other" value="{{ channel_other_value }}"></label>
   <label>Vad hände? *<textarea name="note" required>{{ note_value }}</textarea></label>
   <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
   <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
@@ -526,13 +520,13 @@ SIGNAL_FORM_TEMPLATE = """
   <fieldset>
     <legend>Hypotes (valfritt)</legend>
     <label>Befintlig hypotes
-      <select name="hypothesis_id">
+      <select name="hypothesis_id" id="hypothesis_id">
         <option value="">-- ingen --</option>
         {% for h in hypotheses %}<option value="{{ h['id'] }}" {% if hypothesis_id_value and h['id']|string == hypothesis_id_value|string %}selected{% endif %}>{{ h['statement'] }}</option>{% endfor %}
       </select>
     </label>
-    <label>Eller skriv en ny hypotes<input type="text" name="new_hypothesis"></label>
-    <label>Relation
+    <label>Eller skriv en ny hypotes<input type="text" name="new_hypothesis" id="new_hypothesis"></label>
+    <label id="relation-label">Relation
       <select name="relation">
         <option value="supports" {% if relation_value == 'supports' %}selected{% endif %}>Stödjer</option>
         <option value="contradicts" {% if relation_value == 'contradicts' %}selected{% endif %}>Motsäger</option>
@@ -545,16 +539,16 @@ SIGNAL_FORM_TEMPLATE = """
   <button type="submit" class="btn-primary">{{ submit_label }}</button>
 </form>
 <script>
-function validateSignalType() {
-  var sel = document.querySelector('select[name="signal_type_select"]');
-  var other = document.querySelector('input[name="signal_type_other"]');
-  if (!sel.value && !other.value.trim()) {
-    alert('Fyll i Signal-typ (välj i listan eller skriv eget).');
-    sel.focus();
-    return false;
-  }
-  return true;
+function updateRelationVisibility() {
+  var hypSelect = document.getElementById('hypothesis_id');
+  var newHyp = document.getElementById('new_hypothesis');
+  var relationLabel = document.getElementById('relation-label');
+  var show = !!hypSelect.value || !!newHyp.value.trim();
+  relationLabel.style.display = show ? '' : 'none';
 }
+document.getElementById('hypothesis_id').addEventListener('change', updateRelationVisibility);
+document.getElementById('new_hypothesis').addEventListener('input', updateRelationVisibility);
+updateRelationVisibility();
 
 function setupAutocomplete(inputId, suggestionsId, values) {
   var input = document.getElementById(inputId);
@@ -649,6 +643,8 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
 
 setupAutocomplete('person', 'person-suggestions', {{ people|tojson }});
 setupAutocomplete('organization', 'organization-suggestions', {{ organizations|tojson }});
+setupAutocomplete('signal_type', 'signal_type-suggestions', {{ signal_types|tojson }});
+setupAutocomplete('channel', 'channel-suggestions', {{ channels|tojson }});
 setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', {{ roles|tojson }});
 setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', {{ problem_tag_values|tojson }});
 setupTagAutocomplete('role_tags', 'role_tags-suggestions', {{ role_tag_values|tojson }});
@@ -663,8 +659,8 @@ def new_signal():
     user_id = g.user.id
     if request.method == "POST":
         form = request.form
-        signal_type = resolve_select_or_other(form, "signal_type_select", "signal_type_other")
-        channel = resolve_select_or_other(form, "channel_select", "channel_other") or None
+        signal_type = form["signal_type"].strip()
+        channel = form.get("channel", "").strip() or None
         created = (
             db.table("signals")
             .insert(
@@ -725,12 +721,10 @@ def new_signal():
         problem_tag_values=problem_tag_values,
         role_tag_values=role_tag_values,
         signal_types=signal_types,
-        signal_type_select_value="",
-        signal_type_other_value="",
+        signal_type_value="",
         role_opportunity_value="",
         channels=channels,
-        channel_select_value="",
-        channel_other_value="",
+        channel_value="",
         note_value="",
         learning_value="",
         problem_heard_value="",
@@ -757,8 +751,8 @@ def edit_signal(signal_id):
 
     if request.method == "POST":
         form = request.form
-        signal_type = resolve_select_or_other(form, "signal_type_select", "signal_type_other")
-        channel = resolve_select_or_other(form, "channel_select", "channel_other") or None
+        signal_type = form["signal_type"].strip()
+        channel = form.get("channel", "").strip() or None
         db.table("signals").update(
             {
                 "date": form["date"],
@@ -818,9 +812,6 @@ def edit_signal(signal_id):
     )
     hyp_link = hyp_link_rows[0] if hyp_link_rows else None
 
-    signal_type_known = signal["signal_type"] in signal_types
-    channel_known = not signal["channel"] or signal["channel"] in channels
-
     return render_template_string(
         page("Redigera signal", SIGNAL_FORM_TEMPLATE),
         heading="Redigera signal",
@@ -835,12 +826,10 @@ def edit_signal(signal_id):
         problem_tag_values=problem_tag_values,
         role_tag_values=role_tag_values,
         signal_types=signal_types,
-        signal_type_select_value=signal["signal_type"] if signal_type_known else "",
-        signal_type_other_value="" if signal_type_known else signal["signal_type"],
+        signal_type_value=signal["signal_type"],
         role_opportunity_value=signal["role_opportunity"] or "",
         channels=channels,
-        channel_select_value=signal["channel"] if channel_known else "",
-        channel_other_value="" if channel_known else signal["channel"],
+        channel_value=signal["channel"] or "",
         note_value=signal["note"],
         learning_value=signal["learning"] or "",
         problem_heard_value=signal["problem_heard"] or "",
@@ -1003,8 +992,12 @@ HYPOTHESES_LIST_TEMPLATE = """
   <li>
     <a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a>
     <span class="badge">{{ h['status'] }}</span>
-    <span class="tag role">{{ h['supports_count'] }} stödjer</span>
-    <span class="tag problem">{{ h['contradicts_count'] }} motsäger</span>
+    {% if h['supports_count'] + h['contradicts_count'] == 0 %}
+      <span class="badge">Ingen evidens än</span>
+    {% else %}
+      <span class="tag role">{{ h['supports_count'] }} stödjer</span>
+      <span class="tag problem">{{ h['contradicts_count'] }} motsäger</span>
+    {% endif %}
   </li>
 {% endfor %}
 </ul>
@@ -1020,24 +1013,21 @@ HYPOTHESIS_DETAIL_TEMPLATE = """
     <button type="submit" class="btn-danger">Ta bort</button>
   </form>
 </div>
-<form method="post" action="{{ url_for('update_hypothesis_status', hypothesis_id=hyp['id']) }}">
-  <label>Status
-    <select name="status" onchange="this.form.submit()">
-      {% for s in ['exploring', 'strengthening', 'weakening', 'retired'] %}
-        <option value="{{ s }}" {% if hyp['status'] == s %}selected{% endif %}>{{ s }}</option>
-      {% endfor %}
-    </select>
-  </label>
+<p style="font-weight:600;font-size:.875rem;margin-bottom:.4rem">Status</p>
+<form method="post" action="{{ url_for('update_hypothesis_status', hypothesis_id=hyp['id']) }}" class="status-row">
+  {% for s in ['exploring', 'strengthening', 'weakening', 'retired'] %}
+    <button type="submit" name="status" value="{{ s }}" class="{{ 'btn-accent' if hyp['status'] == s else '' }}">{{ s }}</button>
+  {% endfor %}
 </form>
 
 <h2>Stödjande signaler ({{ supporting|length }})</h2>
 <ul>
-{% for s in supporting %}<li>{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</li>{% endfor %}
+{% for s in supporting %}<li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</a></li>{% endfor %}
 </ul>
 
 <h2>Motsägande signaler ({{ contradicting|length }})</h2>
 <ul>
-{% for s in contradicting %}<li>{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</li>{% endfor %}
+{% for s in contradicting %}<li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</a></li>{% endfor %}
 </ul>
 """
 
@@ -1068,6 +1058,7 @@ def hypotheses_list():
         relations = [sh["relation"] for sh in h.get("signal_hypotheses", [])]
         h["supports_count"] = relations.count("supports")
         h["contradicts_count"] = relations.count("contradicts")
+    rows.sort(key=lambda h: (h["supports_count"] + h["contradicts_count"]) > 0)
     return render_template_string(page("Hypoteser", HYPOTHESES_LIST_TEMPLATE), hypotheses=rows)
 
 
@@ -1086,7 +1077,7 @@ def hypothesis_detail(hypothesis_id):
 
     evidence = (
         db.table("signal_hypotheses")
-        .select("relation, signals(date, person, note)")
+        .select("relation, signals(id, date, person, note)")
         .eq("hypothesis_id", hypothesis_id)
         .execute()
         .data
@@ -1169,6 +1160,7 @@ REVIEW_TEMPLATE = """
   <a href="{{ url_for('review', range=key) }}" class="{{ 'btn-accent' if key == selected_range else '' }}">{{ opt['label'] }}</a>
 {% endfor %}
 </div>
+<p style="margin:-0.5rem 0 1rem"><a href="{{ url_for('ideas') }}">Idé till appen &rarr;</a></p>
 <p>{{ range_count }} signaler {{ range_text }}.</p>
 
 <h2>Mest frekventa problem-taggar</h2>
@@ -1186,10 +1178,15 @@ REVIEW_TEMPLATE = """
 
 <h2>Obehandlade nästa steg</h2>
 <ul>
-{% for s in outstanding_actions %}<li>{{ s['date'] }} — {{ s['person'] }}: {{ s['next_action'] }}</li>{% endfor %}
+{% for s in outstanding_actions %}
+  <li>
+    {{ s['date'] }} — {{ s['person'] }}: {{ s['next_action'] }}
+    <form method="post" action="{{ url_for('mark_next_action_done', signal_id=s['id']) }}">
+      <button type="submit" class="btn-accent">Klarmarkera</button>
+    </form>
+  </li>
+{% endfor %}
 </ul>
-
-<p><a href="{{ url_for('ideas') }}">Idé till appen</a></p>
 """
 
 
@@ -1261,15 +1258,15 @@ def review():
                 entry["new_contradicts"] += 1
         hyps_with_new_evidence = list(hyp_agg.values())
 
-    outstanding_query = (
+    outstanding_actions = (
         db.table("signals")
         .select("*")
         .eq("user_id", user_id)
         .eq("next_action_done", False)
+        .order("date", desc=True)
+        .execute()
+        .data
     )
-    if range_days is not None:
-        outstanding_query = outstanding_query.gte("date", range_start)
-    outstanding_actions = outstanding_query.order("date", desc=True).execute().data
     outstanding_actions = [s for s in outstanding_actions if s.get("next_action")]
 
     return render_template_string(

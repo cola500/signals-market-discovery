@@ -150,6 +150,8 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .hyp.contradicts{color:var(--danger-500)}
 .next-action.done{text-decoration:line-through;color:var(--ink-400)}
 .error{color:var(--rose-text);background:var(--rose-100);padding:.75rem 1rem;border-radius:var(--radius-md);border-left:3px solid var(--danger-500);display:block;margin-bottom:1rem}
+.toast{background:var(--success-500);color:#fff;font-weight:700;padding:.75rem 1rem;border-radius:var(--radius-md);margin-bottom:1rem;overflow:hidden;animation:toast-fade 3s ease-out forwards}
+@keyframes toast-fade{0%,70%{opacity:1;max-height:4rem;margin-bottom:1rem;padding:.75rem 1rem}100%{opacity:0;max-height:0;margin-bottom:0;padding:0 1rem}}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
 #ptr{position:fixed;top:0;left:50%;width:36px;height:36px;margin-left:-18px;border-radius:50%;background:var(--white);box-shadow:var(--shadow-md);display:flex;align-items:center;justify-content:center;z-index:20;opacity:0;transform:translateY(calc(-100% + var(--pull, 0px)));pointer-events:none}
@@ -606,7 +608,7 @@ def new_signal():
         set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
         set_signal_hypothesis(db, user_id, signal_id, form)
 
-        return redirect(url_for("feed"))
+        return redirect(url_for("feed", saved=1))
 
     signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
     channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
@@ -757,6 +759,9 @@ def edit_signal(signal_id):
 
 FEED_TEMPLATE = """
 <h1>Signals flöde</h1>
+{% if show_saved %}
+<p class="toast">Bra jobbat! Signalen är sparad.</p>
+{% endif %}
 {% if not signals %}
 <p>Inga signaler ännu.</p>
 {% endif %}
@@ -815,6 +820,7 @@ FEED_TEMPLATE = """
 def feed():
     db = get_supabase()
     user_id = g.user.id
+    show_saved = request.args.get("saved") == "1"
     signals = (
         db.table("signals")
         .select("*")
@@ -856,6 +862,7 @@ def feed():
         signals=signals,
         tags_by_signal=tags_by_signal,
         hyps_by_signal=hyps_by_signal,
+        show_saved=show_saved,
     )
 
 

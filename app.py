@@ -132,13 +132,31 @@ button:active{transform:scale(.97)}
 .status-row .btn-accent{background:var(--coral-500);border:none;color:#fff}
 .status-row .btn-accent:hover{background:var(--coral-600)}
 fieldset{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
+details{margin-bottom:1rem;border:1px solid var(--ink-100);border-radius:var(--radius-md);background:var(--ink-50);padding:1rem}
+details summary{font-weight:700;font-size:.875rem;cursor:pointer;list-style:none;display:flex;align-items:center;gap:.4rem}
+details summary::-webkit-details-marker{display:none}
+details summary::before{content:'▸';display:inline-block;transition:transform .12s var(--ease)}
+details[open] summary::before{transform:rotate(90deg)}
+details[open] summary{margin-bottom:.5rem}
+details label:last-child{margin-bottom:0}
 .suggestions{list-style:none;margin:.3rem 0 0;padding:0;background:var(--white);border:1px solid var(--ink-200);border-radius:var(--radius-md);box-shadow:var(--shadow-md);max-height:12rem;overflow-y:auto}
 .suggestions:empty{display:none;margin:0;border:none;box-shadow:none}
 .suggestions li{padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
 .suggestions li:active{background:var(--ink-50)}
+.suggestions li[aria-selected="true"]{background:var(--ink-100)}
 .suggestions li+li{border-top:1px solid var(--ink-100)}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
+.feed-controls{margin-bottom:1rem}
+#feed-search{margin-bottom:.6rem}
+.chip-row{display:flex;flex-wrap:wrap;gap:.4rem}
+.chip{padding:.35rem .8rem;font-size:.8rem;font-weight:600;border-radius:var(--radius-full);border:1px solid var(--ink-200);background:var(--white);color:var(--ink-600);min-height:auto}
+.chip.active{background:var(--coral-500);border-color:var(--coral-500);color:#fff}
+.feed-empty{color:var(--ink-400);font-size:.9rem;margin-top:.6rem}
+.note-preview{margin:.75rem 0}
+.card-details{margin-bottom:.5rem}
+.card-toggle{background:none;border:none;color:var(--coral-600);font-weight:700;padding:.4rem 0;min-height:auto}
+.card-toggle:hover{color:var(--coral-700);background:none}
 .feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
 .badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
 .vote-row{display:flex;align-items:center;gap:.5rem;margin-top:.75rem}
@@ -469,56 +487,67 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
 SIGNAL_FORM_TEMPLATE = """
 <h1>{{ heading }}</h1>
 <form method="post" action="{{ form_action }}">
-  <label>Datum *<input type="date" name="date" value="{{ date_value }}" required></label>
-  <label>Person *
-    <div class="autocomplete-field">
-      <input type="text" name="person" id="person" value="{{ person_value }}" autocomplete="off" required>
-      <ul class="suggestions" id="person-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Organisation
-    <div class="autocomplete-field">
-      <input type="text" name="organization" id="organization" value="{{ organization_value }}" autocomplete="off">
-      <ul class="suggestions" id="organization-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Signal-typ *
-    <div class="autocomplete-field">
-      <input type="text" name="signal_type" id="signal_type" value="{{ signal_type_value }}" autocomplete="off" required>
-      <ul class="suggestions" id="signal_type-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Roll/möjlighet (valfritt)
-    <div class="autocomplete-field">
-      <input type="text" name="role_opportunity" id="role_opportunity" value="{{ role_opportunity_value }}" autocomplete="off">
-      <ul class="suggestions" id="role_opportunity-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Kanal (valfritt)
-    <div class="autocomplete-field">
-      <input type="text" name="channel" id="channel" value="{{ channel_value }}" autocomplete="off">
-      <ul class="suggestions" id="channel-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Vad hände? *<textarea name="note" required>{{ note_value }}</textarea></label>
-  <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
-  <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
-  <label>Vad skapade intresse för min bakgrund?<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
-  <label>Problem-taggar (kommaseparerat)
-    <div class="autocomplete-field">
-      <input type="text" name="problem_tags" id="problem_tags" value="{{ problem_tags_value }}" autocomplete="off">
-      <ul class="suggestions" id="problem_tags-suggestions" role="listbox"></ul>
-    </div>
-  </label>
-  <label>Roll-taggar (kommaseparerat)
-    <div class="autocomplete-field">
-      <input type="text" name="role_tags" id="role_tags" value="{{ role_tags_value }}" autocomplete="off">
-      <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
-    </div>
-  </label>
+  <fieldset>
+    <legend>Vem &amp; när</legend>
+    <label>Datum *<input type="date" name="date" value="{{ date_value }}" required></label>
+    <label>Person *
+      <div class="autocomplete-field">
+        <input type="text" name="person" id="person" value="{{ person_value }}" autocomplete="off" required>
+        <ul class="suggestions" id="person-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+    <label>Organisation
+      <div class="autocomplete-field">
+        <input type="text" name="organization" id="organization" value="{{ organization_value }}" autocomplete="off">
+        <ul class="suggestions" id="organization-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+  </fieldset>
 
   <fieldset>
-    <legend>Hypotes (valfritt)</legend>
+    <legend>Vad hände</legend>
+    <label>Signal-typ *
+      <div class="autocomplete-field">
+        <input type="text" name="signal_type" id="signal_type" value="{{ signal_type_value }}" autocomplete="off" required>
+        <ul class="suggestions" id="signal_type-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+    <label>Roll/möjlighet (valfritt)
+      <div class="autocomplete-field">
+        <input type="text" name="role_opportunity" id="role_opportunity" value="{{ role_opportunity_value }}" autocomplete="off">
+        <ul class="suggestions" id="role_opportunity-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+    <label>Kanal (valfritt)
+      <div class="autocomplete-field">
+        <input type="text" name="channel" id="channel" value="{{ channel_value }}" autocomplete="off">
+        <ul class="suggestions" id="channel-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+    <label>Vad hände? *<textarea name="note" required>{{ note_value }}</textarea></label>
+  </fieldset>
+
+  <details {% if learning_value or problem_heard_value or interest_signal_value %}open{% endif %}>
+    <summary>Reflektion (valfritt)</summary>
+    <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
+    <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
+    <label>Vad skapade intresse för min bakgrund?<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
+  </details>
+
+  <fieldset>
+    <legend>Taggar &amp; hypotes</legend>
+    <label>Problem-taggar (kommaseparerat)
+      <div class="autocomplete-field">
+        <input type="text" name="problem_tags" id="problem_tags" value="{{ problem_tags_value }}" autocomplete="off">
+        <ul class="suggestions" id="problem_tags-suggestions" role="listbox"></ul>
+      </div>
+    </label>
+    <label>Roll-taggar (kommaseparerat)
+      <div class="autocomplete-field">
+        <input type="text" name="role_tags" id="role_tags" value="{{ role_tags_value }}" autocomplete="off">
+        <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
+      </div>
+    </label>
     <label>Befintlig hypotes
       <select name="hypothesis_id" id="hypothesis_id">
         <option value="">-- ingen --</option>
@@ -550,45 +579,107 @@ document.getElementById('hypothesis_id').addEventListener('change', updateRelati
 document.getElementById('new_hypothesis').addEventListener('input', updateRelationVisibility);
 updateRelationVisibility();
 
+function setupComboboxAria(input, list, suggestionsId) {
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-haspopup', 'listbox');
+  input.setAttribute('aria-controls', suggestionsId);
+  input.setAttribute('aria-expanded', 'false');
+
+  var activeIndex = -1;
+
+  function options() {
+    return Array.prototype.slice.call(list.children);
+  }
+
+  function setActive(index) {
+    var opts = options();
+    if (!opts.length) return;
+    if (index < 0) index = opts.length - 1;
+    if (index >= opts.length) index = 0;
+    opts.forEach(function(li, i) {
+      li.setAttribute('aria-selected', i === index ? 'true' : 'false');
+    });
+    activeIndex = index;
+    input.setAttribute('aria-activedescendant', opts[index].id);
+    opts[index].scrollIntoView({ block: 'nearest' });
+  }
+
+  input.addEventListener('keydown', function(e) {
+    var opts = options();
+    if (!opts.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive(activeIndex + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive(activeIndex - 1);
+    } else if (e.key === 'Enter') {
+      if (activeIndex >= 0) {
+        e.preventDefault();
+        opts[activeIndex].dispatchEvent(new MouseEvent('mousedown'));
+      }
+    } else if (e.key === 'Escape') {
+      list.innerHTML = '';
+      reset();
+    }
+  });
+
+  function reset() {
+    activeIndex = -1;
+    input.removeAttribute('aria-activedescendant');
+    input.setAttribute('aria-expanded', list.children.length > 0 ? 'true' : 'false');
+  }
+
+  return { reset: reset };
+}
+
 function setupAutocomplete(inputId, suggestionsId, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
+  var combobox = setupComboboxAria(input, list, suggestionsId);
 
   function render(query) {
     list.innerHTML = '';
-    if (!query) return;
-    var lower = query.toLowerCase();
-    var prefixMatches = [];
-    var otherMatches = [];
-    values.forEach(function(value) {
-      var idx = value.toLowerCase().indexOf(lower);
-      if (idx === 0) prefixMatches.push(value);
-      else if (idx > 0) otherMatches.push(value);
-    });
-    prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value) {
-      var li = document.createElement('li');
-      li.textContent = value;
-      li.setAttribute('role', 'option');
-      li.addEventListener('mousedown', function(e) {
-        e.preventDefault();
-        input.value = value;
-        list.innerHTML = '';
+    if (query) {
+      var lower = query.toLowerCase();
+      var prefixMatches = [];
+      var otherMatches = [];
+      values.forEach(function(value) {
+        var idx = value.toLowerCase().indexOf(lower);
+        if (idx === 0) prefixMatches.push(value);
+        else if (idx > 0) otherMatches.push(value);
       });
-      list.appendChild(li);
-    });
+      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
+        var li = document.createElement('li');
+        li.id = suggestionsId + '-opt-' + index;
+        li.textContent = value;
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', 'false');
+        li.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          input.value = value;
+          list.innerHTML = '';
+          combobox.reset();
+        });
+        list.appendChild(li);
+      });
+    }
+    combobox.reset();
   }
 
   input.addEventListener('input', function() {
     render(input.value.trim());
   });
   input.addEventListener('blur', function() {
-    setTimeout(function() { list.innerHTML = ''; }, 200);
+    setTimeout(function() { list.innerHTML = ''; combobox.reset(); }, 200);
   });
 }
 
 function setupTagAutocomplete(inputId, suggestionsId, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
+  var combobox = setupComboboxAria(input, list, suggestionsId);
 
   function tagsInField() {
     return input.value.split(',').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean);
@@ -606,38 +697,43 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
     newTags.push(value);
     input.value = newTags.join(', ') + ', ';
     list.innerHTML = '';
+    combobox.reset();
     input.focus();
   }
 
   function render() {
     list.innerHTML = '';
     var query = currentToken();
-    if (!query) return;
-    var lower = query.toLowerCase();
-    var alreadyUsed = tagsInField();
-    var prefixMatches = [];
-    var otherMatches = [];
-    values.forEach(function(value) {
-      if (alreadyUsed.indexOf(value.toLowerCase()) !== -1) return;
-      var idx = value.toLowerCase().indexOf(lower);
-      if (idx === 0) prefixMatches.push(value);
-      else if (idx > 0) otherMatches.push(value);
-    });
-    prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value) {
-      var li = document.createElement('li');
-      li.textContent = value;
-      li.setAttribute('role', 'option');
-      li.addEventListener('mousedown', function(e) {
-        e.preventDefault();
-        selectTag(value);
+    if (query) {
+      var lower = query.toLowerCase();
+      var alreadyUsed = tagsInField();
+      var prefixMatches = [];
+      var otherMatches = [];
+      values.forEach(function(value) {
+        if (alreadyUsed.indexOf(value.toLowerCase()) !== -1) return;
+        var idx = value.toLowerCase().indexOf(lower);
+        if (idx === 0) prefixMatches.push(value);
+        else if (idx > 0) otherMatches.push(value);
       });
-      list.appendChild(li);
-    });
+      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
+        var li = document.createElement('li');
+        li.id = suggestionsId + '-opt-' + index;
+        li.textContent = value;
+        li.setAttribute('role', 'option');
+        li.setAttribute('aria-selected', 'false');
+        li.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          selectTag(value);
+        });
+        list.appendChild(li);
+      });
+    }
+    combobox.reset();
   }
 
   input.addEventListener('input', render);
   input.addEventListener('blur', function() {
-    setTimeout(function() { list.innerHTML = ''; }, 200);
+    setTimeout(function() { list.innerHTML = ''; combobox.reset(); }, 200);
   });
 }
 
@@ -850,34 +946,54 @@ FEED_TEMPLATE = """
 {% endif %}
 {% if not signals %}
 <p>Inga signaler ännu.</p>
+{% else %}
+<div class="feed-controls">
+  <input type="search" id="feed-search" placeholder="Sök person, organisation, anteckning…" aria-label="Sök i flödet">
+  {% if all_tags or any_hyp_linked %}
+    <div class="chip-row" id="feed-chips">
+      {% for t in all_tags %}<button type="button" class="chip" data-filter-tag="{{ t }}">{{ t }}</button>{% endfor %}
+      {% if any_hyp_linked %}<button type="button" class="chip" data-filter-hyp="1">Kopplad till hypotes</button>{% endif %}
+    </div>
+  {% endif %}
+  <p id="feed-empty-state" class="feed-empty" hidden>Inga signaler matchar filtret.</p>
+</div>
 {% endif %}
 <ul class="feed">
 {% for s in signals %}
-  <li>
+  <li class="feed-card"
+      data-search="{{ (s['person'] ~ ' ' ~ (s['organization'] or '') ~ ' ' ~ s['note'])|lower }}"
+      data-tags="{{ s['tag_texts'] }}"
+      data-has-hyp="{{ '1' if hyps_by_signal.get(s['id']) else '' }}">
     <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %} ({{ s['organization'] }}){% endif %}
     <span class="badge">{{ s['signal_type'] }}</span>
-    {% if s['channel'] %}<span class="badge">{{ s['channel'] }}</span>{% endif %}
-    <p>{{ s['note'] }}</p>
-    {% if s['learning'] %}<p><em>Lärde mig:</em> {{ s['learning'] }}</p>{% endif %}
-    {% if s['role_opportunity'] %}<p><em>Roll/möjlighet:</em> {{ s['role_opportunity'] }}</p>{% endif %}
-    {% if s['problem_heard'] %}<p><em>Problem/behov:</em> {{ s['problem_heard'] }}</p>{% endif %}
-    {% if s['interest_signal'] %}<p><em>Skapade intresse:</em> {{ s['interest_signal'] }}</p>{% endif %}
     {% if tags_by_signal.get(s['id']) %}
       <p class="tags">
         {% for t in tags_by_signal[s['id']] %}<span class="tag {{ t['category'] }}">{{ t['text'] }}</span>{% endfor %}
       </p>
     {% endif %}
-    {% if hyps_by_signal.get(s['id']) %}
-      <p class="hyps">
-        {% for h in hyps_by_signal[s['id']] %}
-          <span class="hyp {{ h['relation'] }}">{{ 'Stödjer' if h['relation'] == 'supports' else 'Motsäger' }}: {{ h['statement'] }}</span>
-        {% endfor %}
-      </p>
-    {% endif %}
-    {% if s['next_action'] %}
-      <p class="next-action {{ 'done' if s['next_action_done'] else '' }}">
-        Nästa steg: {{ s['next_action'] }}{% if s['next_action_done'] %} (klar){% endif %}
-      </p>
+    <p class="note-preview">{{ s['note_preview'] }}</p>
+    {% if s['has_extra'] %}
+      <div class="card-details" {% if not s['always_expanded'] %}hidden{% endif %}>
+        {% if s['channel'] %}<span class="badge">{{ s['channel'] }}</span>{% endif %}
+        {% if s['note_truncated'] %}<p>{{ s['note'] }}</p>{% endif %}
+        {% if s['learning'] %}<p><em>Lärde mig:</em> {{ s['learning'] }}</p>{% endif %}
+        {% if s['role_opportunity'] %}<p><em>Roll/möjlighet:</em> {{ s['role_opportunity'] }}</p>{% endif %}
+        {% if s['problem_heard'] %}<p><em>Problem/behov:</em> {{ s['problem_heard'] }}</p>{% endif %}
+        {% if s['interest_signal'] %}<p><em>Skapade intresse:</em> {{ s['interest_signal'] }}</p>{% endif %}
+        {% if hyps_by_signal.get(s['id']) %}
+          <p class="hyps">
+            {% for h in hyps_by_signal[s['id']] %}
+              <span class="hyp {{ h['relation'] }}">{{ 'Stödjer' if h['relation'] == 'supports' else 'Motsäger' }}: {{ h['statement'] }}</span>
+            {% endfor %}
+          </p>
+        {% endif %}
+        {% if s['next_action'] %}
+          <p class="next-action {{ 'done' if s['next_action_done'] else '' }}">
+            Nästa steg: {{ s['next_action'] }}{% if s['next_action_done'] %} (klar){% endif %}
+          </p>
+        {% endif %}
+      </div>
+      <button type="button" class="card-toggle" aria-expanded="{{ 'true' if s['always_expanded'] else 'false' }}">{{ 'Visa mindre' if s['always_expanded'] else 'Visa mer' }}</button>
     {% endif %}
     <div class="actions-row">
       {% if s['next_action'] and not s['next_action_done'] %}
@@ -898,6 +1014,60 @@ FEED_TEMPLATE = """
   </li>
 {% endfor %}
 </ul>
+<script>
+(function() {
+  var search = document.getElementById('feed-search');
+  var chipRow = document.getElementById('feed-chips');
+  var items = Array.prototype.slice.call(document.querySelectorAll('.feed-card'));
+  var emptyState = document.getElementById('feed-empty-state');
+  var activeTags = [];
+  var hypOnly = false;
+
+  function applyFilters() {
+    var query = search ? search.value.trim().toLowerCase() : '';
+    var visibleCount = 0;
+    items.forEach(function(li) {
+      var tags = li.dataset.tags ? li.dataset.tags.split(',') : [];
+      var matchesSearch = !query || li.dataset.search.indexOf(query) !== -1;
+      var matchesTags = activeTags.every(function(t) { return tags.indexOf(t) !== -1; });
+      var matchesHyp = !hypOnly || li.dataset.hasHyp === '1';
+      var visible = matchesSearch && matchesTags && matchesHyp;
+      li.hidden = !visible;
+      if (visible) visibleCount++;
+    });
+    if (emptyState) emptyState.hidden = visibleCount !== 0;
+  }
+
+  if (search) search.addEventListener('input', applyFilters);
+  if (chipRow) {
+    chipRow.addEventListener('click', function(e) {
+      var chip = e.target.closest('.chip');
+      if (!chip) return;
+      if (chip.dataset.filterTag) {
+        var t = chip.dataset.filterTag;
+        var idx = activeTags.indexOf(t);
+        if (idx === -1) { activeTags.push(t); chip.classList.add('active'); }
+        else { activeTags.splice(idx, 1); chip.classList.remove('active'); }
+      } else if (chip.dataset.filterHyp) {
+        hypOnly = !hypOnly;
+        chip.classList.toggle('active', hypOnly);
+      }
+      applyFilters();
+    });
+  }
+
+  document.querySelectorAll('.card-toggle').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = btn.closest('.feed-card');
+      var details = card.querySelector('.card-details');
+      var expanded = btn.getAttribute('aria-expanded') === 'true';
+      details.hidden = expanded;
+      btn.setAttribute('aria-expanded', String(!expanded));
+      btn.textContent = expanded ? 'Visa mer' : 'Visa mindre';
+    });
+  });
+})();
+</script>
 """
 
 
@@ -943,11 +1113,37 @@ def feed():
                 {"relation": r["relation"], "statement": r["hypotheses"]["statement"]}
             )
 
+    note_preview_max = 140
+    for s in signals:
+        first_line, _, rest = s["note"].partition("\n")
+        line_truncated = len(first_line) > note_preview_max
+        s["note_preview"] = (
+            first_line[:note_preview_max].rstrip() + "…" if line_truncated else first_line
+        )
+        s["note_truncated"] = line_truncated or bool(rest)
+        s["always_expanded"] = bool(s["next_action"] and not s["next_action_done"])
+        s["tag_texts"] = ",".join(t["text"] for t in tags_by_signal.get(s["id"], []))
+        s["has_extra"] = bool(
+            s["channel"]
+            or s["note_truncated"]
+            or s["learning"]
+            or s["role_opportunity"]
+            or s["problem_heard"]
+            or s["interest_signal"]
+            or hyps_by_signal.get(s["id"])
+            or s["next_action"]
+        )
+
+    all_tags = sorted({t["text"] for tags in tags_by_signal.values() for t in tags})
+    any_hyp_linked = bool(hyps_by_signal)
+
     return render_template_string(
         page("Signal Feed", FEED_TEMPLATE),
         signals=signals,
         tags_by_signal=tags_by_signal,
         hyps_by_signal=hyps_by_signal,
+        all_tags=all_tags,
+        any_hyp_linked=any_hyp_linked,
         show_saved=show_saved,
     )
 

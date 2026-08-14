@@ -382,6 +382,18 @@ def distinct_values(db, user_id, column, seed):
     return sorted(values)
 
 
+def distinct_tag_values(db, user_id, category):
+    rows = (
+        db.table("tags")
+        .select("text")
+        .eq("user_id", user_id)
+        .eq("category", category)
+        .execute()
+        .data
+    )
+    return sorted({r["text"] for r in rows})
+
+
 def recent_distinct_values(db, user_id, column):
     rows = (
         db.table("signals")
@@ -481,7 +493,12 @@ SIGNAL_FORM_TEMPLATE = """
     </select>
   </label>
   <label>...eller skriv egen signal-typ (åsidosätter valet ovan)<input type="text" name="signal_type_other" value="{{ signal_type_other_value }}"></label>
-  <label>Roll/möjlighet (valfritt)<input type="text" name="role_opportunity" value="{{ role_opportunity_value }}"></label>
+  <label>Roll/möjlighet (valfritt)
+    <div class="autocomplete-field">
+      <input type="text" name="role_opportunity" id="role_opportunity" value="{{ role_opportunity_value }}" autocomplete="off">
+      <ul class="suggestions" id="role_opportunity-suggestions" role="listbox"></ul>
+    </div>
+  </label>
   <label>Kanal
     <select name="channel_select">
       <option value="">-- ingen --</option>
@@ -493,8 +510,18 @@ SIGNAL_FORM_TEMPLATE = """
   <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
   <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
   <label>Vad skapade intresse för min bakgrund?<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
-  <label>Problem-taggar (kommaseparerat)<input type="text" name="problem_tags" value="{{ problem_tags_value }}"></label>
-  <label>Roll-taggar (kommaseparerat)<input type="text" name="role_tags" value="{{ role_tags_value }}"></label>
+  <label>Problem-taggar (kommaseparerat)
+    <div class="autocomplete-field">
+      <input type="text" name="problem_tags" id="problem_tags" value="{{ problem_tags_value }}" autocomplete="off">
+      <ul class="suggestions" id="problem_tags-suggestions" role="listbox"></ul>
+    </div>
+  </label>
+  <label>Roll-taggar (kommaseparerat)
+    <div class="autocomplete-field">
+      <input type="text" name="role_tags" id="role_tags" value="{{ role_tags_value }}" autocomplete="off">
+      <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
+    </div>
+  </label>
 
   <fieldset>
     <legend>Hypotes (valfritt)</legend>
@@ -565,8 +592,66 @@ function setupAutocomplete(inputId, suggestionsId, values) {
   });
 }
 
+function setupTagAutocomplete(inputId, suggestionsId, values) {
+  var input = document.getElementById(inputId);
+  var list = document.getElementById(suggestionsId);
+
+  function tagsInField() {
+    return input.value.split(',').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean);
+  }
+
+  function currentToken() {
+    var parts = input.value.split(',');
+    return parts[parts.length - 1].trim();
+  }
+
+  function selectTag(value) {
+    var parts = input.value.split(',');
+    parts.pop();
+    var newTags = parts.map(function(p) { return p.trim(); }).filter(Boolean);
+    newTags.push(value);
+    input.value = newTags.join(', ') + ', ';
+    list.innerHTML = '';
+    input.focus();
+  }
+
+  function render() {
+    list.innerHTML = '';
+    var query = currentToken();
+    if (!query) return;
+    var lower = query.toLowerCase();
+    var alreadyUsed = tagsInField();
+    var prefixMatches = [];
+    var otherMatches = [];
+    values.forEach(function(value) {
+      if (alreadyUsed.indexOf(value.toLowerCase()) !== -1) return;
+      var idx = value.toLowerCase().indexOf(lower);
+      if (idx === 0) prefixMatches.push(value);
+      else if (idx > 0) otherMatches.push(value);
+    });
+    prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value) {
+      var li = document.createElement('li');
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        selectTag(value);
+      });
+      list.appendChild(li);
+    });
+  }
+
+  input.addEventListener('input', render);
+  input.addEventListener('blur', function() {
+    setTimeout(function() { list.innerHTML = ''; }, 200);
+  });
+}
+
 setupAutocomplete('person', 'person-suggestions', {{ people|tojson }});
 setupAutocomplete('organization', 'organization-suggestions', {{ organizations|tojson }});
+setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', {{ roles|tojson }});
+setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', {{ problem_tag_values|tojson }});
+setupTagAutocomplete('role_tags', 'role_tags-suggestions', {{ role_tag_values|tojson }});
 </script>
 """
 
@@ -614,6 +699,9 @@ def new_signal():
     channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
     people = recent_distinct_values(db, user_id, "person")
     organizations = recent_distinct_values(db, user_id, "organization")
+    roles = recent_distinct_values(db, user_id, "role_opportunity")
+    problem_tag_values = distinct_tag_values(db, user_id, "problem")
+    role_tag_values = distinct_tag_values(db, user_id, "role")
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -633,6 +721,9 @@ def new_signal():
         organization_value="",
         people=people,
         organizations=organizations,
+        roles=roles,
+        problem_tag_values=problem_tag_values,
+        role_tag_values=role_tag_values,
         signal_types=signal_types,
         signal_type_select_value="",
         signal_type_other_value="",
@@ -694,6 +785,9 @@ def edit_signal(signal_id):
     channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
     people = recent_distinct_values(db, user_id, "person")
     organizations = recent_distinct_values(db, user_id, "organization")
+    roles = recent_distinct_values(db, user_id, "role_opportunity")
+    problem_tag_values = distinct_tag_values(db, user_id, "problem")
+    role_tag_values = distinct_tag_values(db, user_id, "role")
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -737,6 +831,9 @@ def edit_signal(signal_id):
         organization_value=signal["organization"] or "",
         people=people,
         organizations=organizations,
+        roles=roles,
+        problem_tag_values=problem_tag_values,
+        role_tag_values=role_tag_values,
         signal_types=signal_types,
         signal_type_select_value=signal["signal_type"] if signal_type_known else "",
         signal_type_other_value="" if signal_type_known else signal["signal_type"],

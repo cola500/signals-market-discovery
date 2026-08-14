@@ -14,5 +14,8 @@ __pycache__/
 # OS
 .DS_Store
 
+# Playwright MCP session artifacts
+.playwright-mcp/
+
 # Design handoff package - working files, not app source
 design-package/

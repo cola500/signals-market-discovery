@@ -19,7 +19,18 @@ from functools import wraps
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, g, redirect, render_template_string, request, send_from_directory, session, url_for
+from flask import (
+    Flask,
+    flash,
+    g,
+    get_flashed_messages,
+    redirect,
+    render_template_string,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 from supabase import Client, ClientOptions, create_client
 
 load_dotenv()
@@ -172,6 +183,9 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .next-action.done{text-decoration:line-through;color:var(--ink-400)}
 .error{color:var(--rose-text);background:var(--rose-100);padding:.75rem 1rem;border-radius:var(--radius-md);border-left:3px solid var(--danger-500);display:block;margin-bottom:1rem}
 .toast{background:var(--success-500);color:#fff;font-weight:700;padding:.75rem 1rem;border-radius:var(--radius-md);margin-bottom:1rem;overflow:hidden;animation:toast-fade 3s ease-out forwards}
+.insight-note{background:var(--teal-100);color:var(--teal-700);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;font-weight:500}
+.insight-note p{margin:0}
+.insight-note p+p{margin-top:.35rem}
 @keyframes toast-fade{0%,70%{opacity:1;max-height:4rem;margin-bottom:1rem;padding:.75rem 1rem}100%{opacity:0;max-height:0;margin-bottom:0;padding:0 1rem}}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
@@ -482,6 +496,53 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
         db.table("signal_hypotheses").insert(
             {"signal_id": signal_id, "hypothesis_id": hypothesis_id, "user_id": user_id, "relation": relation}
         ).execute()
+        return hypothesis_id, relation
+    return None, None
+
+
+def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_raw):
+    """Short, evidence-based feedback lines about what this save changed.
+
+    Pure counts over the user's own data - no inference beyond what's
+    directly observable, per the "no invented insights" requirement.
+    """
+    lines = []
+
+    if hypothesis_id and relation:
+        hyp_rows = db.table("hypotheses").select("statement").eq("id", hypothesis_id).execute().data
+        statement = hyp_rows[0]["statement"] if hyp_rows else ""
+        evidence_count = len(
+            db.table("signal_hypotheses")
+            .select("signal_id")
+            .eq("hypothesis_id", hypothesis_id)
+            .eq("relation", relation)
+            .execute()
+            .data
+        )
+        verb = "stödjande" if relation == "supports" else "motsägande"
+        if evidence_count <= 1:
+            lines.append(f"Hypotesen “{statement}” fick sin första {verb} signal.")
+        else:
+            lines.append(f"Hypotesen “{statement}” fick ytterligare en {verb} signal ({evidence_count} totalt).")
+    else:
+        lines.append("Ingen hypotes kopplad till den här signalen än.")
+
+    problem_texts = {t.strip().lower() for t in parse_tag_list(problem_tags_raw)}
+    tag_counts = {}
+    for text in problem_texts:
+        tag_rows = (
+            db.table("tags").select("id").eq("user_id", user_id).eq("text", text).eq("category", "problem").execute().data
+        )
+        if not tag_rows:
+            continue
+        n = len(db.table("signal_tags").select("signal_id").eq("tag_id", tag_rows[0]["id"]).execute().data)
+        tag_counts[text] = n
+    if tag_counts:
+        top_text, top_count = max(tag_counts.items(), key=lambda kv: kv[1])
+        if top_count >= 2:
+            lines.append(f"Problemet “{top_text}” har nu dykt upp {top_count} gånger.")
+
+    return lines
 
 
 SIGNAL_FORM_TEMPLATE = """
@@ -783,7 +844,12 @@ def new_signal():
 
         set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
         set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
-        set_signal_hypothesis(db, user_id, signal_id, form)
+        linked_hypothesis_id, linked_relation = set_signal_hypothesis(db, user_id, signal_id, form)
+
+        for line in build_learning_feedback(
+            db, user_id, linked_hypothesis_id, linked_relation, form.get("problem_tags", "")
+        ):
+            flash(line)
 
         return redirect(url_for("feed", saved=1))
 
@@ -867,7 +933,12 @@ def edit_signal(signal_id):
 
         set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
         set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
-        set_signal_hypothesis(db, user_id, signal_id, form)
+        linked_hypothesis_id, linked_relation = set_signal_hypothesis(db, user_id, signal_id, form)
+
+        for line in build_learning_feedback(
+            db, user_id, linked_hypothesis_id, linked_relation, form.get("problem_tags", "")
+        ):
+            flash(line)
 
         return redirect(url_for("feed"))
 
@@ -943,6 +1014,11 @@ FEED_TEMPLATE = """
 <h1>Signals flöde</h1>
 {% if show_saved %}
 <p class="toast">Bra jobbat! Signalen är sparad.</p>
+{% endif %}
+{% if learning_feedback %}
+<div class="insight-note">
+  {% for line in learning_feedback %}<p>{{ line }}</p>{% endfor %}
+</div>
 {% endif %}
 {% if not signals %}
 <p>Inga signaler ännu.</p>
@@ -1077,6 +1153,7 @@ def feed():
     db = get_supabase()
     user_id = g.user.id
     show_saved = request.args.get("saved") == "1"
+    learning_feedback = get_flashed_messages()
     signals = (
         db.table("signals")
         .select("*")
@@ -1145,6 +1222,7 @@ def feed():
         all_tags=all_tags,
         any_hyp_linked=any_hyp_linked,
         show_saved=show_saved,
+        learning_feedback=learning_feedback,
     )
 
 

@@ -237,6 +237,8 @@ PULL_TO_REFRESH = """
     pulling = true;
   }, { passive: true });
 
+  var deadZone = 12;
+
   document.addEventListener('touchmove', function (e) {
     if (!pulling || startY === null || loading) return;
     var dy = e.touches[0].clientY - startY;
@@ -245,8 +247,9 @@ PULL_TO_REFRESH = """
       setPull(0);
       return;
     }
+    if (dy < deadZone) return;
     e.preventDefault();
-    var dist = Math.min(dy * 0.5, 100);
+    var dist = Math.min((dy - deadZone) * 0.5, 100);
     setPull(dist);
     ptr.classList.add('show');
     ptr.classList.toggle('ready', dist >= threshold);

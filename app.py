@@ -1627,10 +1627,20 @@ REVIEW_TEMPLATE = """
 <h2>Mest frekventa roll-taggar</h2>
 <ul>{% for t in top_role_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
 
+<h2>Mest frekventa kanaler</h2>
+<ul>{% for t in top_channels %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
+
 <h2>Hypoteser med ny evidens {{ range_text }}</h2>
 <ul>
 {% for h in hyps_with_new_evidence %}
   <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a> — +{{ h['new_supports'] }} stödjer, +{{ h['new_contradicts'] }} motsäger</li>
+{% endfor %}
+</ul>
+
+<h2>Hypoteser utan ny evidens {{ range_text }}</h2>
+<ul>
+{% for h in hyps_without_new_evidence %}
+  <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a></li>
 {% endfor %}
 </ul>
 
@@ -1674,9 +1684,16 @@ def review():
     range_signals = range_query.order("date", desc=True).execute().data
     range_ids = [s["id"] for s in range_signals]
 
+    channel_counts = {}
+    for s in range_signals:
+        c = s.get("channel")
+        if c:
+            channel_counts[c] = channel_counts.get(c, 0) + 1
+    top_channels = [{"text": k, "n": v} for k, v in sorted(channel_counts.items(), key=lambda kv: -kv[1])][:10]
+
     top_problem_tags = []
     top_role_tags = []
-    hyps_with_new_evidence = []
+    hyp_agg = {}
     if range_ids:
         tag_rows = (
             db.table("signal_tags")
@@ -1704,7 +1721,6 @@ def review():
             .execute()
             .data
         )
-        hyp_agg = {}
         for r in hyp_rows:
             hid = r["hypothesis_id"]
             entry = hyp_agg.setdefault(
@@ -1714,7 +1730,18 @@ def review():
                 entry["new_supports"] += 1
             else:
                 entry["new_contradicts"] += 1
-        hyps_with_new_evidence = list(hyp_agg.values())
+
+    hyps_with_new_evidence = list(hyp_agg.values())
+    active_hypotheses = (
+        db.table("hypotheses")
+        .select("id, statement")
+        .eq("user_id", user_id)
+        .neq("status", "retired")
+        .order("created_at")
+        .execute()
+        .data
+    )
+    hyps_without_new_evidence = [h for h in active_hypotheses if h["id"] not in hyp_agg]
 
     outstanding_actions = (
         db.table("signals")
@@ -1735,7 +1762,9 @@ def review():
         range_count=len(range_signals),
         top_problem_tags=top_problem_tags,
         top_role_tags=top_role_tags,
+        top_channels=top_channels,
         hyps_with_new_evidence=hyps_with_new_evidence,
+        hyps_without_new_evidence=hyps_without_new_evidence,
         outstanding_actions=outstanding_actions,
     )
 

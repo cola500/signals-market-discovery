@@ -467,7 +467,6 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
     db.table("signal_hypotheses").delete().eq("signal_id", signal_id).execute()
     relation = form.get("relation")
     new_hyp_statement = form.get("new_hypothesis", "").strip()
-    existing_hyp_id = form.get("hypothesis_id")
     hypothesis_id = None
     if new_hyp_statement:
         existing_hyp = (
@@ -489,8 +488,6 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
                 .data
             )
             hypothesis_id = created[0]["id"]
-    elif existing_hyp_id:
-        hypothesis_id = existing_hyp_id
 
     if hypothesis_id and relation:
         db.table("signal_hypotheses").insert(
@@ -609,13 +606,12 @@ SIGNAL_FORM_TEMPLATE = """
         <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
       </div>
     </label>
-    <label>Befintlig hypotes
-      <select name="hypothesis_id" id="hypothesis_id">
-        <option value="">-- ingen --</option>
-        {% for h in hypotheses %}<option value="{{ h['id'] }}" {% if hypothesis_id_value and h['id']|string == hypothesis_id_value|string %}selected{% endif %}>{{ h['statement'] }}</option>{% endfor %}
-      </select>
+    <label>Hypotes (valfritt)
+      <div class="autocomplete-field">
+        <input type="text" name="new_hypothesis" id="new_hypothesis" value="{{ hypothesis_value }}" autocomplete="off">
+        <ul class="suggestions" id="hypothesis-suggestions" role="listbox"></ul>
+      </div>
     </label>
-    <label>Eller skriv en ny hypotes<input type="text" name="new_hypothesis" id="new_hypothesis"></label>
     <label id="relation-label">Relation
       <select name="relation">
         <option value="supports" {% if relation_value == 'supports' %}selected{% endif %}>Stödjer</option>
@@ -630,13 +626,10 @@ SIGNAL_FORM_TEMPLATE = """
 </form>
 <script>
 function updateRelationVisibility() {
-  var hypSelect = document.getElementById('hypothesis_id');
   var newHyp = document.getElementById('new_hypothesis');
   var relationLabel = document.getElementById('relation-label');
-  var show = !!hypSelect.value || !!newHyp.value.trim();
-  relationLabel.style.display = show ? '' : 'none';
+  relationLabel.style.display = newHyp.value.trim() ? '' : 'none';
 }
-document.getElementById('hypothesis_id').addEventListener('change', updateRelationVisibility);
 document.getElementById('new_hypothesis').addEventListener('input', updateRelationVisibility);
 updateRelationVisibility();
 
@@ -725,6 +718,7 @@ function setupAutocomplete(inputId, suggestionsId, values) {
       li.addEventListener('mousedown', function(e) {
         e.preventDefault();
         input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
         list.innerHTML = '';
         combobox.reset();
       });
@@ -817,6 +811,7 @@ setupAutocomplete('organization', 'organization-suggestions', {{ organizations|t
 setupAutocomplete('signal_type', 'signal_type-suggestions', {{ signal_types|tojson }});
 setupAutocomplete('channel', 'channel-suggestions', {{ channels|tojson }});
 setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', {{ roles|tojson }});
+setupAutocomplete('new_hypothesis', 'hypothesis-suggestions', {{ hypothesis_statements|tojson }});
 setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', {{ problem_tag_values|tojson }});
 setupTagAutocomplete('role_tags', 'role_tags-suggestions', {{ role_tag_values|tojson }});
 </script>
@@ -907,8 +902,8 @@ def new_signal():
         interest_signal_value="",
         problem_tags_value="",
         role_tags_value="",
-        hypotheses=hypotheses,
-        hypothesis_id_value="",
+        hypothesis_statements=[h["statement"] for h in hypotheses],
+        hypothesis_value="",
         relation_value="supports",
         next_action_value="",
     )
@@ -985,7 +980,7 @@ def edit_signal(signal_id):
 
     hyp_link_rows = (
         db.table("signal_hypotheses")
-        .select("hypothesis_id, relation")
+        .select("relation, hypotheses(statement)")
         .eq("signal_id", signal_id)
         .limit(1)
         .execute()
@@ -1017,8 +1012,8 @@ def edit_signal(signal_id):
         interest_signal_value=signal["interest_signal"] or "",
         problem_tags_value=problem_tags_value,
         role_tags_value=role_tags_value,
-        hypotheses=hypotheses,
-        hypothesis_id_value=str(hyp_link["hypothesis_id"]) if hyp_link else "",
+        hypothesis_statements=[h["statement"] for h in hypotheses],
+        hypothesis_value=hyp_link["hypotheses"]["statement"] if hyp_link else "",
         relation_value=hyp_link["relation"] if hyp_link else "supports",
         next_action_value=signal["next_action"] or "",
     )

@@ -702,6 +702,7 @@ function setupAutocomplete(inputId, suggestionsId, values) {
 
   function render(query) {
     list.innerHTML = '';
+    var matches;
     if (query) {
       var lower = query.toLowerCase();
       var prefixMatches = [];
@@ -711,25 +712,31 @@ function setupAutocomplete(inputId, suggestionsId, values) {
         if (idx === 0) prefixMatches.push(value);
         else if (idx > 0) otherMatches.push(value);
       });
-      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
-        var li = document.createElement('li');
-        li.id = suggestionsId + '-opt-' + index;
-        li.textContent = value;
-        li.setAttribute('role', 'option');
-        li.setAttribute('aria-selected', 'false');
-        li.addEventListener('mousedown', function(e) {
-          e.preventDefault();
-          input.value = value;
-          list.innerHTML = '';
-          combobox.reset();
-        });
-        list.appendChild(li);
-      });
+      matches = prefixMatches.concat(otherMatches).slice(0, 6);
+    } else {
+      matches = values;
     }
+    matches.forEach(function(value, index) {
+      var li = document.createElement('li');
+      li.id = suggestionsId + '-opt-' + index;
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        input.value = value;
+        list.innerHTML = '';
+        combobox.reset();
+      });
+      list.appendChild(li);
+    });
     combobox.reset();
   }
 
   input.addEventListener('input', function() {
+    render(input.value.trim());
+  });
+  input.addEventListener('focus', function() {
     render(input.value.trim());
   });
   input.addEventListener('blur', function() {
@@ -765,9 +772,10 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
   function render() {
     list.innerHTML = '';
     var query = currentToken();
+    var alreadyUsed = tagsInField();
+    var matches;
     if (query) {
       var lower = query.toLowerCase();
-      var alreadyUsed = tagsInField();
       var prefixMatches = [];
       var otherMatches = [];
       values.forEach(function(value) {
@@ -776,23 +784,29 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
         if (idx === 0) prefixMatches.push(value);
         else if (idx > 0) otherMatches.push(value);
       });
-      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
-        var li = document.createElement('li');
-        li.id = suggestionsId + '-opt-' + index;
-        li.textContent = value;
-        li.setAttribute('role', 'option');
-        li.setAttribute('aria-selected', 'false');
-        li.addEventListener('mousedown', function(e) {
-          e.preventDefault();
-          selectTag(value);
-        });
-        list.appendChild(li);
+      matches = prefixMatches.concat(otherMatches).slice(0, 6);
+    } else {
+      matches = values.filter(function(value) {
+        return alreadyUsed.indexOf(value.toLowerCase()) === -1;
       });
     }
+    matches.forEach(function(value, index) {
+      var li = document.createElement('li');
+      li.id = suggestionsId + '-opt-' + index;
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        selectTag(value);
+      });
+      list.appendChild(li);
+    });
     combobox.reset();
   }
 
   input.addEventListener('input', render);
+  input.addEventListener('focus', render);
   input.addEventListener('blur', function() {
     setTimeout(function() { list.innerHTML = ''; combobox.reset(); }, 200);
   });

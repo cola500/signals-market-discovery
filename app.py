@@ -156,9 +156,10 @@ details label:last-child{margin-bottom:0}
 .suggestions li:active{background:var(--ink-50)}
 .suggestions li[aria-selected="true"]{background:var(--ink-100)}
 .suggestions li+li{border-top:1px solid var(--ink-100)}
-.suggestion-remove{flex-shrink:0;width:1.75rem;height:1.75rem;min-height:auto;padding:0;border:none;border-radius:var(--radius-full);background:transparent;color:var(--ink-400);font-size:1.1rem;line-height:1;cursor:pointer}
-.suggestion-remove:hover{background:var(--ink-100);color:var(--ink-950)}
-.suggestion-remove:active{transform:none;background:var(--ink-200)}
+.suggestion-actions{flex-shrink:0;display:flex;align-items:center;gap:.15rem}
+.suggestion-edit,.suggestion-remove{flex-shrink:0;width:1.75rem;height:1.75rem;min-height:auto;padding:0;border:none;border-radius:var(--radius-full);background:transparent;color:var(--ink-400);font-size:1.1rem;line-height:1;cursor:pointer}
+.suggestion-edit:hover,.suggestion-remove:hover{background:var(--ink-100);color:var(--ink-950)}
+.suggestion-edit:active,.suggestion-remove:active{transform:none;background:var(--ink-200)}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
 .feed-controls{margin-bottom:1rem}
@@ -724,6 +725,37 @@ function makeRemoveButton(field, value, li, values) {
   return btn;
 }
 
+function renameSuggestion(field, oldValue, newValue, li, values) {
+  fetch('/suggestions/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'field=' + encodeURIComponent(field) + '&old_value=' + encodeURIComponent(oldValue) + '&new_value=' + encodeURIComponent(newValue)
+  });
+  var idx = values.indexOf(oldValue);
+  if (idx !== -1) values.splice(idx, 1);
+  if (values.indexOf(newValue) === -1) values.push(newValue);
+  values.sort();
+  li.remove();
+}
+
+function makeEditButton(field, value, li, values) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'suggestion-edit';
+  btn.setAttribute('aria-label', 'Redigera "' + value + '"');
+  btn.textContent = '✎';
+  btn.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var next = window.prompt('Ny text:', value);
+    if (next === null) return;
+    next = next.trim();
+    if (!next || next === value) return;
+    renameSuggestion(field, value, next, li, values);
+  });
+  return btn;
+}
+
 function setupAutocomplete(inputId, suggestionsId, field, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
@@ -758,7 +790,11 @@ function setupAutocomplete(inputId, suggestionsId, field, values) {
         list.innerHTML = '';
         combobox.reset();
       });
-      li.appendChild(makeRemoveButton(field, value, li, values));
+      var actions = document.createElement('span');
+      actions.className = 'suggestion-actions';
+      actions.appendChild(makeEditButton(field, value, li, values));
+      actions.appendChild(makeRemoveButton(field, value, li, values));
+      li.appendChild(actions);
       list.appendChild(li);
     });
     combobox.reset();
@@ -831,7 +867,11 @@ function setupTagAutocomplete(inputId, suggestionsId, field, values) {
         e.preventDefault();
         selectTag(value);
       });
-      li.appendChild(makeRemoveButton(field, value, li, values));
+      var actions = document.createElement('span');
+      actions.className = 'suggestion-actions';
+      actions.appendChild(makeEditButton(field, value, li, values));
+      actions.appendChild(makeRemoveButton(field, value, li, values));
+      li.appendChild(actions);
       list.appendChild(li);
     });
     combobox.reset();
@@ -1071,6 +1111,86 @@ def hide_suggestion():
             {"user_id": user_id, "field": field, "value": value},
             on_conflict="user_id,field,value",
         ).execute()
+    return "", 204
+
+
+SIGNAL_TEXT_COLUMNS = {"signal_type", "channel", "person", "organization", "role_opportunity"}
+TAG_FIELD_CATEGORIES = {"problem_tags": "problem", "role_tags": "role"}
+
+
+@app.route("/suggestions/rename", methods=["POST"])
+@login_required
+def rename_suggestion():
+    db = get_supabase()
+    user_id = g.user.id
+    field = request.form.get("field", "").strip()
+    old_value = request.form.get("old_value", "").strip()
+    new_value = request.form.get("new_value", "").strip()
+    if not field or not old_value or not new_value or old_value == new_value:
+        return "", 204
+
+    if field in SIGNAL_TEXT_COLUMNS:
+        db.table("signals").update({field: new_value}).eq("user_id", user_id).eq(field, old_value).execute()
+
+    elif field in TAG_FIELD_CATEGORIES:
+        category = TAG_FIELD_CATEGORIES[field]
+        new_value = new_value.lower()
+        old_rows = (
+            db.table("tags")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("category", category)
+            .eq("text", old_value)
+            .execute()
+            .data
+        )
+        if old_rows:
+            old_id = old_rows[0]["id"]
+            target_rows = (
+                db.table("tags")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("category", category)
+                .eq("text", new_value)
+                .execute()
+                .data
+            )
+            if target_rows and target_rows[0]["id"] != old_id:
+                target_id = target_rows[0]["id"]
+                linked = db.table("signal_tags").select("signal_id").eq("tag_id", old_id).execute().data
+                for row in linked:
+                    db.table("signal_tags").upsert(
+                        {"signal_id": row["signal_id"], "tag_id": target_id, "user_id": user_id},
+                        on_conflict="signal_id,tag_id",
+                    ).execute()
+                db.table("signal_tags").delete().eq("tag_id", old_id).execute()
+                db.table("tags").delete().eq("id", old_id).execute()
+            else:
+                db.table("tags").update({"text": new_value}).eq("id", old_id).execute()
+
+    elif field == "hypothesis":
+        old_rows = (
+            db.table("hypotheses").select("id").eq("user_id", user_id).eq("statement", old_value).execute().data
+        )
+        if old_rows:
+            old_id = old_rows[0]["id"]
+            target_rows = (
+                db.table("hypotheses")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("statement", new_value)
+                .execute()
+                .data
+            )
+            if target_rows and target_rows[0]["id"] != old_id:
+                target_id = target_rows[0]["id"]
+                db.table("signal_hypotheses").update({"hypothesis_id": target_id}).eq(
+                    "hypothesis_id", old_id
+                ).execute()
+                db.table("hypotheses").delete().eq("id", old_id).execute()
+            else:
+                db.table("hypotheses").update({"statement": new_value}).eq("id", old_id).execute()
+
     return "", 204
 
 

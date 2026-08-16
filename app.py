@@ -152,10 +152,13 @@ details[open] summary{margin-bottom:.5rem}
 details label:last-child{margin-bottom:0}
 .suggestions{list-style:none;margin:.3rem 0 0;padding:0;background:var(--white);border:1px solid var(--ink-200);border-radius:var(--radius-md);box-shadow:var(--shadow-md);max-height:12rem;overflow-y:auto}
 .suggestions:empty{display:none;margin:0;border:none;box-shadow:none}
-.suggestions li{padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
+.suggestions li{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
 .suggestions li:active{background:var(--ink-50)}
 .suggestions li[aria-selected="true"]{background:var(--ink-100)}
 .suggestions li+li{border-top:1px solid var(--ink-100)}
+.suggestion-remove{flex-shrink:0;width:1.75rem;height:1.75rem;min-height:auto;padding:0;border:none;border-radius:var(--radius-full);background:transparent;color:var(--ink-400);font-size:1.1rem;line-height:1;cursor:pointer}
+.suggestion-remove:hover{background:var(--ink-100);color:var(--ink-950)}
+.suggestion-remove:active{transform:none;background:var(--ink-200)}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
 .feed-controls{margin-bottom:1rem}
@@ -410,14 +413,22 @@ def get_or_create_tag(db, user_id, text, category):
     return created[0]["id"]
 
 
-def distinct_values(db, user_id, column, seed):
+def get_hidden_suggestions(db, user_id):
+    rows = db.table("hidden_suggestions").select("field, value").eq("user_id", user_id).execute().data
+    hidden = {}
+    for r in rows:
+        hidden.setdefault(r["field"], set()).add(r["value"])
+    return hidden
+
+
+def distinct_values(db, user_id, column, seed, hidden=frozenset()):
     rows = db.table("signals").select(column).eq("user_id", user_id).execute().data
     values = {r[column] for r in rows if r.get(column)}
     values.update(seed)
-    return sorted(values)
+    return sorted(v for v in values if v not in hidden)
 
 
-def distinct_tag_values(db, user_id, category):
+def distinct_tag_values(db, user_id, category, hidden=frozenset()):
     rows = (
         db.table("tags")
         .select("text")
@@ -426,10 +437,10 @@ def distinct_tag_values(db, user_id, category):
         .execute()
         .data
     )
-    return sorted({r["text"] for r in rows})
+    return sorted({r["text"] for r in rows} - set(hidden))
 
 
-def recent_distinct_values(db, user_id, column):
+def recent_distinct_values(db, user_id, column, hidden=frozenset()):
     rows = (
         db.table("signals")
         .select(f"{column}, date")
@@ -442,7 +453,7 @@ def recent_distinct_values(db, user_id, column):
     values = []
     for r in rows:
         value = r.get(column)
-        if value and value not in seen:
+        if value and value not in seen and value not in hidden:
             seen.add(value)
             values.append(value)
     return values
@@ -688,7 +699,32 @@ function setupComboboxAria(input, list, suggestionsId) {
   return { reset: reset };
 }
 
-function setupAutocomplete(inputId, suggestionsId, values) {
+function hideSuggestion(field, value, li, values) {
+  fetch('/suggestions/hide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+  });
+  var idx = values.indexOf(value);
+  if (idx !== -1) values.splice(idx, 1);
+  li.remove();
+}
+
+function makeRemoveButton(field, value, li, values) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'suggestion-remove';
+  btn.setAttribute('aria-label', 'Ta bort "' + value + '" från förslag');
+  btn.textContent = '×';
+  btn.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    hideSuggestion(field, value, li, values);
+  });
+  return btn;
+}
+
+function setupAutocomplete(inputId, suggestionsId, field, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
   var combobox = setupComboboxAria(input, list, suggestionsId);
@@ -722,6 +758,7 @@ function setupAutocomplete(inputId, suggestionsId, values) {
         list.innerHTML = '';
         combobox.reset();
       });
+      li.appendChild(makeRemoveButton(field, value, li, values));
       list.appendChild(li);
     });
     combobox.reset();
@@ -738,7 +775,7 @@ function setupAutocomplete(inputId, suggestionsId, values) {
   });
 }
 
-function setupTagAutocomplete(inputId, suggestionsId, values) {
+function setupTagAutocomplete(inputId, suggestionsId, field, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
   var combobox = setupComboboxAria(input, list, suggestionsId);
@@ -794,6 +831,7 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
         e.preventDefault();
         selectTag(value);
       });
+      li.appendChild(makeRemoveButton(field, value, li, values));
       list.appendChild(li);
     });
     combobox.reset();
@@ -806,14 +844,14 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
   });
 }
 
-setupAutocomplete('person', 'person-suggestions', {{ people|tojson }});
-setupAutocomplete('organization', 'organization-suggestions', {{ organizations|tojson }});
-setupAutocomplete('signal_type', 'signal_type-suggestions', {{ signal_types|tojson }});
-setupAutocomplete('channel', 'channel-suggestions', {{ channels|tojson }});
-setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', {{ roles|tojson }});
-setupAutocomplete('new_hypothesis', 'hypothesis-suggestions', {{ hypothesis_statements|tojson }});
-setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', {{ problem_tag_values|tojson }});
-setupTagAutocomplete('role_tags', 'role_tags-suggestions', {{ role_tag_values|tojson }});
+setupAutocomplete('person', 'person-suggestions', 'person', {{ people|tojson }});
+setupAutocomplete('organization', 'organization-suggestions', 'organization', {{ organizations|tojson }});
+setupAutocomplete('signal_type', 'signal_type-suggestions', 'signal_type', {{ signal_types|tojson }});
+setupAutocomplete('channel', 'channel-suggestions', 'channel', {{ channels|tojson }});
+setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', 'role_opportunity', {{ roles|tojson }});
+setupAutocomplete('new_hypothesis', 'hypothesis-suggestions', 'hypothesis', {{ hypothesis_statements|tojson }});
+setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', 'problem_tags', {{ problem_tag_values|tojson }});
+setupTagAutocomplete('role_tags', 'role_tags-suggestions', 'role_tags', {{ role_tag_values|tojson }});
 </script>
 """
 
@@ -862,13 +900,14 @@ def new_signal():
 
         return redirect(url_for("feed", saved=1))
 
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
-    people = recent_distinct_values(db, user_id, "person")
-    organizations = recent_distinct_values(db, user_id, "organization")
-    roles = recent_distinct_values(db, user_id, "role_opportunity")
-    problem_tag_values = distinct_tag_values(db, user_id, "problem")
-    role_tag_values = distinct_tag_values(db, user_id, "role")
+    hidden = get_hidden_suggestions(db, user_id)
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
+    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
+    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
+    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
+    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
+    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -902,7 +941,7 @@ def new_signal():
         interest_signal_value="",
         problem_tags_value="",
         role_tags_value="",
-        hypothesis_statements=[h["statement"] for h in hypotheses],
+        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
         hypothesis_value="",
         relation_value="supports",
         next_action_value="",
@@ -951,13 +990,14 @@ def edit_signal(signal_id):
 
         return redirect(url_for("feed"))
 
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
-    people = recent_distinct_values(db, user_id, "person")
-    organizations = recent_distinct_values(db, user_id, "organization")
-    roles = recent_distinct_values(db, user_id, "role_opportunity")
-    problem_tag_values = distinct_tag_values(db, user_id, "problem")
-    role_tag_values = distinct_tag_values(db, user_id, "role")
+    hidden = get_hidden_suggestions(db, user_id)
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
+    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
+    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
+    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
+    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
+    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -1012,11 +1052,26 @@ def edit_signal(signal_id):
         interest_signal_value=signal["interest_signal"] or "",
         problem_tags_value=problem_tags_value,
         role_tags_value=role_tags_value,
-        hypothesis_statements=[h["statement"] for h in hypotheses],
+        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
         hypothesis_value=hyp_link["hypotheses"]["statement"] if hyp_link else "",
         relation_value=hyp_link["relation"] if hyp_link else "supports",
         next_action_value=signal["next_action"] or "",
     )
+
+
+@app.route("/suggestions/hide", methods=["POST"])
+@login_required
+def hide_suggestion():
+    db = get_supabase()
+    user_id = g.user.id
+    field = request.form.get("field", "").strip()
+    value = request.form.get("value", "").strip()
+    if field and value:
+        db.table("hidden_suggestions").upsert(
+            {"user_id": user_id, "field": field, "value": value},
+            on_conflict="user_id,field,value",
+        ).execute()
+    return "", 204
 
 
 FEED_TEMPLATE = """

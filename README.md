@@ -9,9 +9,10 @@ See [`HYPOTHESIS.md`](./HYPOTHESIS.md) for the experiment framing — what this 
 ## Core workflow
 
 1. Log in
-2. Capture a signal in under two minutes: who, what happened, what you learned, optional tags, and an optional link to a hypothesis it supports or contradicts
-3. Browse the feed to re-read past signals, edit any of them, or mark a next step done
-4. Check the weekly review for recurring tags and hypotheses that gained new evidence
+2. Capture a signal in under two minutes: who, what happened, what you learned, optional tags, and an optional link to a hypothesis it supports or contradicts — autocomplete on repeated fields (person, organisation, role, tags) speeds this up, and saving surfaces short evidence-based feedback (e.g. a hypothesis just got its first supporting signal)
+3. Browse the feed to re-read past signals, search or filter by tag/hypothesis, edit or delete any of them, or mark a next step done — pull down to refresh on mobile
+4. Check Översikt (choose a week/month/quarter/all-time window) for recurring tags and hypotheses that gained new evidence
+5. Jot down a product idea for the app itself any time from Översikt, and upvote/downvote past ideas to rank them
 
 ## Tech stack
 

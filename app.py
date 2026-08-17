@@ -14,7 +14,7 @@ Kräver en .env-fil med SUPABASE_URL, SUPABASE_ANON_KEY, FLASK_SECRET_KEY
 inte lokalt - appen fungerar likadant lokalt och i produktion.
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -198,6 +198,9 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .insight-item a{color:inherit;text-decoration:none}
 .insight-item a:hover{text-decoration:underline}
 .insight-item.insight-milestone{background:var(--teal-100);color:var(--teal-700);font-weight:600}
+.insight-item.insight-role-trend-up{background:var(--teal-100);color:var(--teal-700)}
+.insight-item.insight-role-trend-down{background:var(--rose-100);color:var(--rose-text)}
+.insight-subtext{display:block;margin-top:.25rem;font-weight:400;color:var(--ink-600);font-size:.8rem}
 @keyframes toast-fade{0%,70%{opacity:1;max-height:4rem;margin-bottom:1rem;padding:.75rem 1rem}100%{opacity:0;max-height:0;margin-bottom:0;padding:0 1rem}}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
@@ -573,7 +576,8 @@ def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_r
 class Insight:
     text: str
     url: str | None
-    category: str  # "milestone" | "hypothesis" | "problem"
+    category: str  # "milestone" | "hypothesis" | "problem" | "role" | "role-trend-up" | "role-trend-down"
+    evidence: list[str] = field(default_factory=list)
 
 
 MILESTONE_SIGNAL_THRESHOLDS = [10, 25, 50, 100, 250, 500]
@@ -660,6 +664,261 @@ def build_insights(db, user_id, range_ids, range_text, problem_counts):
     insights += build_hypothesis_insights(db, range_ids)
     insights += build_problem_insights(problem_counts, range_text)
     return insights[:8]
+
+
+ROLE_TREND_MIN_COMBINED_SIGNALS = 4   # nuvarande + föregående period måste tillsammans nå detta
+ROLE_TREND_MIN_ABS_CHANGE = 2         # absolut förändring i antal signaler
+ROLE_TREND_MIN_RELATIVE_CHANGE = 0.5  # OCH minst 50% relativ förändring - filtrerar bort brus vid höga volymer
+ROLE_ENERGY_MIN_SIGNALS = 3           # min. energi-satta signaler för en roll innan snitt visas
+ROLE_SUBINSIGHT_MIN_SIGNALS = 3       # min. rollbelägg i perioden för hypotes/problem/org-insikter
+ROLE_HYPOTHESIS_MIN_COUNT = 2         # speglar build_problem_insights n>=2-gate
+ROLE_PROBLEM_MIN_COUNT = 2
+ROLE_ORG_MIN_COUNT = 2
+ROLE_INSIGHTS_MAX_TOTAL = 5           # färre än de generella insikterna eftersom korten kan ha flera evidensrader
+
+ROLE_INSIGHT_PRIORITY = ["trend", "energy", "hypothesis", "problem", "org"]  # styr vilken rubrik ett rollkort får
+
+
+def role_trend_headline(role, current, previous):
+    if previous == 0:
+        return f"Rollen “{role}” är ny i statistiken."
+    direction = "allt oftare" if current > previous else "mer sällan"
+    return f"Rollen “{role}” dyker upp {direction}."
+
+
+def role_trend_evidence_line(current, previous, range_text):
+    if previous == 0:
+        return f"{current} signaler {range_text}, ingen förekomst perioden innan."
+    return f"{current} signaler {range_text}, jämfört med {previous} perioden innan."
+
+
+def role_energy_evidence_line(avg_energy, n, range_text):
+    return f"Snittenergi {avg_energy:.1f}/5 baserat på {n} signaler med registrerad energi {range_text}."
+
+
+def role_hypothesis_evidence_line(statement, relation, n, range_text):
+    verb = "stödjer" if relation == "supports" else "motsäger"
+    return f"{n} signaler {verb} hypotesen “{statement}” {range_text}."
+
+
+def role_problem_evidence_line(problem, n, range_text):
+    return f"“{problem}” har dykt upp i {n} av dessa signaler {range_text}."
+
+
+def role_org_evidence_line(org_counts, range_text):
+    listing = ", ".join(f"{org} ({n})" for org, n in org_counts)
+    return f"Återkommande hos {listing} {range_text}."
+
+
+def build_role_trend_data(db, user_id, role_counts, range_days, range_start, range_text):
+    if range_days is None or range_start is None:
+        return {}
+
+    prev_start = (date.fromisoformat(range_start) - timedelta(days=range_days)).isoformat()
+    prev_signal_rows = (
+        db.table("signals")
+        .select("id")
+        .eq("user_id", user_id)
+        .gte("date", prev_start)
+        .lt("date", range_start)
+        .execute()
+        .data
+    )
+    prev_ids = [s["id"] for s in prev_signal_rows]
+
+    prev_role_counts = {}
+    if prev_ids:
+        prev_tag_rows = (
+            db.table("signal_tags")
+            .select("signal_id, tags(text, category)")
+            .in_("signal_id", prev_ids)
+            .execute()
+            .data
+        )
+        for r in prev_tag_rows:
+            t = r["tags"]
+            if t["category"] == "role":
+                prev_role_counts[t["text"]] = prev_role_counts.get(t["text"], 0) + 1
+
+    result = {}
+    for role in set(role_counts) | set(prev_role_counts):
+        current = role_counts.get(role, 0)
+        previous = prev_role_counts.get(role, 0)
+        if current == 0:
+            continue
+        diff = current - previous
+        combined = current + previous
+        relative = abs(diff) / previous if previous else float(current)
+        if combined < ROLE_TREND_MIN_COMBINED_SIGNALS:
+            continue
+        if abs(diff) < ROLE_TREND_MIN_ABS_CHANGE:
+            continue
+        if relative < ROLE_TREND_MIN_RELATIVE_CHANGE:
+            continue
+        result[role] = {
+            "headline": role_trend_headline(role, current, previous),
+            "line": role_trend_evidence_line(current, previous, range_text),
+            "category": "role-trend-up" if diff > 0 else "role-trend-down",
+        }
+    return result
+
+
+def build_role_energy_data(db, range_ids, role_tags_by_signal, range_text):
+    if not range_ids:
+        return {}
+
+    energy_rows = db.table("signals").select("id, energy").in_("id", range_ids).execute().data
+
+    sum_energy, n_energy = {}, {}
+    for row in energy_rows:
+        if row["energy"] is None:
+            continue
+        for role in role_tags_by_signal.get(row["id"], []):
+            sum_energy[role] = sum_energy.get(role, 0) + row["energy"]
+            n_energy[role] = n_energy.get(role, 0) + 1
+
+    candidates = [
+        (role, sum_energy[role] / n_energy[role], n_energy[role])
+        for role in sum_energy
+        if n_energy[role] >= ROLE_ENERGY_MIN_SIGNALS
+    ]
+    if not candidates:
+        return {}
+
+    candidates.sort(key=lambda c: (-c[1], -c[2], c[0]))
+    role, avg, n = candidates[0]
+    return {
+        role: {
+            "headline": f"Rollen “{role}” ger mest energi just nu.",
+            "line": role_energy_evidence_line(avg, n, range_text),
+            "category": None,
+        }
+    }
+
+
+def build_role_hypothesis_data(db, range_ids, role_tags_by_signal, range_text):
+    if not range_ids:
+        return {}
+
+    range_hyp_rows = (
+        db.table("signal_hypotheses")
+        .select("signal_id, hypothesis_id, relation, hypotheses(statement)")
+        .in_("signal_id", range_ids)
+        .execute()
+        .data
+    )
+
+    counts = {}  # (role, hypothesis_id, relation) -> {"n": int, "statement": str}
+    for r in range_hyp_rows:
+        for role in role_tags_by_signal.get(r["signal_id"], []):
+            key = (role, r["hypothesis_id"], r["relation"])
+            entry = counts.setdefault(key, {"n": 0, "statement": r["hypotheses"]["statement"]})
+            entry["n"] += 1
+
+    best_per_role = {}
+    for (role, hyp_id, relation), entry in counts.items():
+        if entry["n"] < ROLE_HYPOTHESIS_MIN_COUNT:
+            continue
+        current_best = best_per_role.get(role)
+        if current_best is None or entry["n"] > current_best["n"]:
+            best_per_role[role] = {"n": entry["n"], "statement": entry["statement"], "relation": relation}
+
+    return {
+        role: {
+            "headline": f"Rollen “{role}” kopplar ofta till samma hypotes.",
+            "line": role_hypothesis_evidence_line(best["statement"], best["relation"], best["n"], range_text),
+            "category": None,
+        }
+        for role, best in best_per_role.items()
+    }
+
+
+def build_role_problem_data(range_ids, role_tags_by_signal, problem_tags_by_signal, role_counts, range_text):
+    counts = {}  # (role, problem) -> n
+    for signal_id in range_ids:
+        roles = role_tags_by_signal.get(signal_id, [])
+        problems = problem_tags_by_signal.get(signal_id, [])
+        if not roles or not problems:
+            continue
+        for role in roles:
+            for problem in problems:
+                counts[(role, problem)] = counts.get((role, problem), 0) + 1
+
+    best_per_role = {}
+    for (role, problem), n in counts.items():
+        if role_counts.get(role, 0) < ROLE_SUBINSIGHT_MIN_SIGNALS:
+            continue
+        if n < ROLE_PROBLEM_MIN_COUNT:
+            continue
+        current_best = best_per_role.get(role)
+        if current_best is None or n > current_best["n"]:
+            best_per_role[role] = {"n": n, "problem": problem}
+
+    return {
+        role: {
+            "headline": f"Rollen “{role}” kopplar ofta till samma problem.",
+            "line": role_problem_evidence_line(best["problem"], best["n"], range_text),
+            "category": None,
+        }
+        for role, best in best_per_role.items()
+    }
+
+
+def build_role_org_data(range_signals, role_tags_by_signal, role_counts, range_text):
+    org_counts = {}  # (role, org) -> n
+    for s in range_signals:
+        org = s.get("organization")
+        if not org:
+            continue
+        for role in role_tags_by_signal.get(s["id"], []):
+            org_counts[(role, org)] = org_counts.get((role, org), 0) + 1
+
+    by_role = {}
+    for (role, org), n in org_counts.items():
+        if n < ROLE_ORG_MIN_COUNT:
+            continue
+        by_role.setdefault(role, []).append((org, n))
+
+    result = {}
+    for role, orgs in by_role.items():
+        if role_counts.get(role, 0) < ROLE_SUBINSIGHT_MIN_SIGNALS:
+            continue
+        orgs.sort(key=lambda pair: -pair[1])
+        result[role] = {
+            "headline": f"Rollen “{role}” har återkommande organisationer.",
+            "line": role_org_evidence_line(orgs, range_text),
+            "category": None,
+        }
+    return result
+
+
+def build_role_insights(db, user_id, range_signals, range_ids, role_counts,
+                         role_tags_by_signal, problem_tags_by_signal,
+                         range_days, range_start, range_text):
+    sources = {
+        "trend": build_role_trend_data(db, user_id, role_counts, range_days, range_start, range_text),
+        "energy": build_role_energy_data(db, range_ids, role_tags_by_signal, range_text),
+        "hypothesis": build_role_hypothesis_data(db, range_ids, role_tags_by_signal, range_text),
+        "problem": build_role_problem_data(range_ids, role_tags_by_signal, problem_tags_by_signal, role_counts, range_text),
+        "org": build_role_org_data(range_signals, role_tags_by_signal, role_counts, range_text),
+    }
+
+    roles = {}
+    for kind in ROLE_INSIGHT_PRIORITY:
+        for role, item in sources[kind].items():
+            entry = roles.setdefault(role, {"headline": None, "category": "role", "evidence": []})
+            if entry["headline"] is None:
+                entry["headline"] = item["headline"]
+            if item.get("category"):
+                entry["category"] = item["category"]
+            entry["evidence"].append(item["line"])
+
+    insights = [
+        Insight(entry["headline"], url_for("feed", tag=role), entry["category"], entry["evidence"])
+        for role, entry in roles.items()
+    ]
+    insights.sort(key=lambda i: -len(i.evidence))
+    return insights[:ROLE_INSIGHTS_MAX_TOTAL]
 
 
 SIGNAL_FORM_TEMPLATE = """
@@ -1769,6 +2028,20 @@ REVIEW_TEMPLATE = """
 </ul>
 {% endif %}
 
+<h2>Roll-insikter</h2>
+{% if not role_insights %}
+<p>Inga roll-insikter än för vald period.</p>
+{% else %}
+<ul class="insight-list">
+{% for i in role_insights %}
+  <li class="insight-item insight-{{ i.category }}">
+    {% if i.url %}<a href="{{ i.url }}">{{ i.text }}</a>{% else %}{{ i.text }}{% endif %}
+    {% for line in i.evidence %}<small class="insight-subtext">{{ line }}</small>{% endfor %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
 <h2>Mest frekventa roll-taggar</h2>
 <ul>{% for t in top_role_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
 
@@ -1809,6 +2082,7 @@ def review():
     range_days = REVIEW_RANGE_OPTIONS[selected_range]["days"]
 
     range_query = db.table("signals").select("*").eq("user_id", user_id)
+    range_start = None
     if range_days is not None:
         range_start = (datetime.now(timezone.utc) - timedelta(days=range_days)).date().isoformat()
         range_query = range_query.gte("date", range_start)
@@ -1823,7 +2097,8 @@ def review():
     top_channels = [{"text": k, "n": v} for k, v in sorted(channel_counts.items(), key=lambda kv: -kv[1])][:10]
 
     top_role_tags = []
-    problem_counts = {}
+    problem_counts, role_counts = {}, {}
+    role_tags_by_signal, problem_tags_by_signal = {}, {}
     if range_ids:
         tag_rows = (
             db.table("signal_tags")
@@ -1832,11 +2107,14 @@ def review():
             .execute()
             .data
         )
-        problem_counts, role_counts = {}, {}
         for r in tag_rows:
             t = r["tags"]
-            bucket = problem_counts if t["category"] == "problem" else role_counts
-            bucket[t["text"]] = bucket.get(t["text"], 0) + 1
+            if t["category"] == "problem":
+                problem_counts[t["text"]] = problem_counts.get(t["text"], 0) + 1
+                problem_tags_by_signal.setdefault(r["signal_id"], []).append(t["text"])
+            elif t["category"] == "role":
+                role_counts[t["text"]] = role_counts.get(t["text"], 0) + 1
+                role_tags_by_signal.setdefault(r["signal_id"], []).append(t["text"])
         top_role_tags = [
             {"text": k, "n": v} for k, v in sorted(role_counts.items(), key=lambda kv: -kv[1])
         ][:10]
@@ -1852,17 +2130,22 @@ def review():
     )
     outstanding_actions = [s for s in outstanding_actions if s.get("next_action")]
 
-    insights = build_insights(
-        db, user_id, range_ids, REVIEW_RANGE_OPTIONS[selected_range]["text"], problem_counts
+    range_text = REVIEW_RANGE_OPTIONS[selected_range]["text"]
+    insights = build_insights(db, user_id, range_ids, range_text, problem_counts)
+    role_insights = build_role_insights(
+        db, user_id, range_signals, range_ids, role_counts,
+        role_tags_by_signal, problem_tags_by_signal,
+        range_days, range_start, range_text,
     )
 
     return render_template_string(
         page("Översikt", REVIEW_TEMPLATE),
         range_options=REVIEW_RANGE_OPTIONS,
         selected_range=selected_range,
-        range_text=REVIEW_RANGE_OPTIONS[selected_range]["text"],
+        range_text=range_text,
         range_count=len(range_signals),
         insights=insights,
+        role_insights=role_insights,
         top_role_tags=top_role_tags,
         top_channels=top_channels,
         outstanding_actions=outstanding_actions,

@@ -152,10 +152,14 @@ details[open] summary{margin-bottom:.5rem}
 details label:last-child{margin-bottom:0}
 .suggestions{list-style:none;margin:.3rem 0 0;padding:0;background:var(--white);border:1px solid var(--ink-200);border-radius:var(--radius-md);box-shadow:var(--shadow-md);max-height:12rem;overflow-y:auto}
 .suggestions:empty{display:none;margin:0;border:none;box-shadow:none}
-.suggestions li{padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
+.suggestions li{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.75rem .85rem;font-size:1rem;font-weight:500;cursor:pointer}
 .suggestions li:active{background:var(--ink-50)}
 .suggestions li[aria-selected="true"]{background:var(--ink-100)}
 .suggestions li+li{border-top:1px solid var(--ink-100)}
+.suggestion-actions{flex-shrink:0;display:flex;align-items:center;gap:.15rem}
+.suggestion-edit,.suggestion-remove{flex-shrink:0;width:1.75rem;height:1.75rem;min-height:auto;padding:0;border:none;border-radius:var(--radius-full);background:transparent;color:var(--ink-400);font-size:1.1rem;line-height:1;cursor:pointer}
+.suggestion-edit:hover,.suggestion-remove:hover{background:var(--ink-100);color:var(--ink-950)}
+.suggestion-edit:active,.suggestion-remove:active{transform:none;background:var(--ink-200)}
 legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .feed{list-style:none;padding:0;display:flex;flex-direction:column;gap:1rem}
 .feed-controls{margin-bottom:1rem}
@@ -419,14 +423,22 @@ def get_or_create_tag(db, user_id, text, category):
     return created[0]["id"]
 
 
-def distinct_values(db, user_id, column, seed):
+def get_hidden_suggestions(db, user_id):
+    rows = db.table("hidden_suggestions").select("field, value").eq("user_id", user_id).execute().data
+    hidden = {}
+    for r in rows:
+        hidden.setdefault(r["field"], set()).add(r["value"])
+    return hidden
+
+
+def distinct_values(db, user_id, column, seed, hidden=frozenset()):
     rows = db.table("signals").select(column).eq("user_id", user_id).execute().data
     values = {r[column] for r in rows if r.get(column)}
     values.update(seed)
-    return sorted(values)
+    return sorted(v for v in values if v not in hidden)
 
 
-def distinct_tag_values(db, user_id, category):
+def distinct_tag_values(db, user_id, category, hidden=frozenset()):
     rows = (
         db.table("tags")
         .select("text")
@@ -435,10 +447,10 @@ def distinct_tag_values(db, user_id, category):
         .execute()
         .data
     )
-    return sorted({r["text"] for r in rows})
+    return sorted({r["text"] for r in rows} - set(hidden))
 
 
-def recent_distinct_values(db, user_id, column):
+def recent_distinct_values(db, user_id, column, hidden=frozenset()):
     rows = (
         db.table("signals")
         .select(f"{column}, date")
@@ -451,7 +463,7 @@ def recent_distinct_values(db, user_id, column):
     values = []
     for r in rows:
         value = r.get(column)
-        if value and value not in seen:
+        if value and value not in seen and value not in hidden:
             seen.add(value)
             values.append(value)
     return values
@@ -476,7 +488,6 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
     db.table("signal_hypotheses").delete().eq("signal_id", signal_id).execute()
     relation = form.get("relation")
     new_hyp_statement = form.get("new_hypothesis", "").strip()
-    existing_hyp_id = form.get("hypothesis_id")
     hypothesis_id = None
     if new_hyp_statement:
         existing_hyp = (
@@ -498,8 +509,6 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
                 .data
             )
             hypothesis_id = created[0]["id"]
-    elif existing_hyp_id:
-        hypothesis_id = existing_hyp_id
 
     if hypothesis_id and relation:
         db.table("signal_hypotheses").insert(
@@ -624,13 +633,12 @@ SIGNAL_FORM_TEMPLATE = """
         <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
       </div>
     </label>
-    <label>Befintlig hypotes
-      <select name="hypothesis_id" id="hypothesis_id">
-        <option value="">-- ingen --</option>
-        {% for h in hypotheses %}<option value="{{ h['id'] }}" {% if hypothesis_id_value and h['id']|string == hypothesis_id_value|string %}selected{% endif %}>{{ h['statement'] }}</option>{% endfor %}
-      </select>
+    <label>Hypotes (valfritt)
+      <div class="autocomplete-field">
+        <input type="text" name="new_hypothesis" id="new_hypothesis" value="{{ hypothesis_value }}" autocomplete="off">
+        <ul class="suggestions" id="hypothesis-suggestions" role="listbox"></ul>
+      </div>
     </label>
-    <label>Eller skriv en ny hypotes<input type="text" name="new_hypothesis" id="new_hypothesis"></label>
     <label id="relation-label">Relation
       <select name="relation">
         <option value="supports" {% if relation_value == 'supports' %}selected{% endif %}>Stödjer</option>
@@ -645,13 +653,10 @@ SIGNAL_FORM_TEMPLATE = """
 </form>
 <script>
 function updateRelationVisibility() {
-  var hypSelect = document.getElementById('hypothesis_id');
   var newHyp = document.getElementById('new_hypothesis');
   var relationLabel = document.getElementById('relation-label');
-  var show = !!hypSelect.value || !!newHyp.value.trim();
-  relationLabel.style.display = show ? '' : 'none';
+  relationLabel.style.display = newHyp.value.trim() ? '' : 'none';
 }
-document.getElementById('hypothesis_id').addEventListener('change', updateRelationVisibility);
 document.getElementById('new_hypothesis').addEventListener('input', updateRelationVisibility);
 updateRelationVisibility();
 
@@ -710,13 +715,70 @@ function setupComboboxAria(input, list, suggestionsId) {
   return { reset: reset };
 }
 
-function setupAutocomplete(inputId, suggestionsId, values) {
+function hideSuggestion(field, value, li, values) {
+  fetch('/suggestions/hide', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'field=' + encodeURIComponent(field) + '&value=' + encodeURIComponent(value)
+  });
+  var idx = values.indexOf(value);
+  if (idx !== -1) values.splice(idx, 1);
+  li.remove();
+}
+
+function makeRemoveButton(field, value, li, values) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'suggestion-remove';
+  btn.setAttribute('aria-label', 'Ta bort "' + value + '" från förslag');
+  btn.textContent = '×';
+  btn.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    hideSuggestion(field, value, li, values);
+  });
+  return btn;
+}
+
+function renameSuggestion(field, oldValue, newValue, li, values) {
+  fetch('/suggestions/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'field=' + encodeURIComponent(field) + '&old_value=' + encodeURIComponent(oldValue) + '&new_value=' + encodeURIComponent(newValue)
+  });
+  var idx = values.indexOf(oldValue);
+  if (idx !== -1) values.splice(idx, 1);
+  if (values.indexOf(newValue) === -1) values.push(newValue);
+  values.sort();
+  li.remove();
+}
+
+function makeEditButton(field, value, li, values) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'suggestion-edit';
+  btn.setAttribute('aria-label', 'Redigera "' + value + '"');
+  btn.textContent = '✎';
+  btn.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var next = window.prompt('Ny text:', value);
+    if (next === null) return;
+    next = next.trim();
+    if (!next || next === value) return;
+    renameSuggestion(field, value, next, li, values);
+  });
+  return btn;
+}
+
+function setupAutocomplete(inputId, suggestionsId, field, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
   var combobox = setupComboboxAria(input, list, suggestionsId);
 
   function render(query) {
     list.innerHTML = '';
+    var matches;
     if (query) {
       var lower = query.toLowerCase();
       var prefixMatches = [];
@@ -726,25 +788,37 @@ function setupAutocomplete(inputId, suggestionsId, values) {
         if (idx === 0) prefixMatches.push(value);
         else if (idx > 0) otherMatches.push(value);
       });
-      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
-        var li = document.createElement('li');
-        li.id = suggestionsId + '-opt-' + index;
-        li.textContent = value;
-        li.setAttribute('role', 'option');
-        li.setAttribute('aria-selected', 'false');
-        li.addEventListener('mousedown', function(e) {
-          e.preventDefault();
-          input.value = value;
-          list.innerHTML = '';
-          combobox.reset();
-        });
-        list.appendChild(li);
-      });
+      matches = prefixMatches.concat(otherMatches).slice(0, 6);
+    } else {
+      matches = values;
     }
+    matches.forEach(function(value, index) {
+      var li = document.createElement('li');
+      li.id = suggestionsId + '-opt-' + index;
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        list.innerHTML = '';
+        combobox.reset();
+      });
+      var actions = document.createElement('span');
+      actions.className = 'suggestion-actions';
+      actions.appendChild(makeEditButton(field, value, li, values));
+      actions.appendChild(makeRemoveButton(field, value, li, values));
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
     combobox.reset();
   }
 
   input.addEventListener('input', function() {
+    render(input.value.trim());
+  });
+  input.addEventListener('focus', function() {
     render(input.value.trim());
   });
   input.addEventListener('blur', function() {
@@ -752,7 +826,7 @@ function setupAutocomplete(inputId, suggestionsId, values) {
   });
 }
 
-function setupTagAutocomplete(inputId, suggestionsId, values) {
+function setupTagAutocomplete(inputId, suggestionsId, field, values) {
   var input = document.getElementById(inputId);
   var list = document.getElementById(suggestionsId);
   var combobox = setupComboboxAria(input, list, suggestionsId);
@@ -780,9 +854,10 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
   function render() {
     list.innerHTML = '';
     var query = currentToken();
+    var alreadyUsed = tagsInField();
+    var matches;
     if (query) {
       var lower = query.toLowerCase();
-      var alreadyUsed = tagsInField();
       var prefixMatches = [];
       var otherMatches = [];
       values.forEach(function(value) {
@@ -791,35 +866,47 @@ function setupTagAutocomplete(inputId, suggestionsId, values) {
         if (idx === 0) prefixMatches.push(value);
         else if (idx > 0) otherMatches.push(value);
       });
-      prefixMatches.concat(otherMatches).slice(0, 6).forEach(function(value, index) {
-        var li = document.createElement('li');
-        li.id = suggestionsId + '-opt-' + index;
-        li.textContent = value;
-        li.setAttribute('role', 'option');
-        li.setAttribute('aria-selected', 'false');
-        li.addEventListener('mousedown', function(e) {
-          e.preventDefault();
-          selectTag(value);
-        });
-        list.appendChild(li);
+      matches = prefixMatches.concat(otherMatches).slice(0, 6);
+    } else {
+      matches = values.filter(function(value) {
+        return alreadyUsed.indexOf(value.toLowerCase()) === -1;
       });
     }
+    matches.forEach(function(value, index) {
+      var li = document.createElement('li');
+      li.id = suggestionsId + '-opt-' + index;
+      li.textContent = value;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        selectTag(value);
+      });
+      var actions = document.createElement('span');
+      actions.className = 'suggestion-actions';
+      actions.appendChild(makeEditButton(field, value, li, values));
+      actions.appendChild(makeRemoveButton(field, value, li, values));
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
     combobox.reset();
   }
 
   input.addEventListener('input', render);
+  input.addEventListener('focus', render);
   input.addEventListener('blur', function() {
     setTimeout(function() { list.innerHTML = ''; combobox.reset(); }, 200);
   });
 }
 
-setupAutocomplete('person', 'person-suggestions', {{ people|tojson }});
-setupAutocomplete('organization', 'organization-suggestions', {{ organizations|tojson }});
-setupAutocomplete('signal_type', 'signal_type-suggestions', {{ signal_types|tojson }});
-setupAutocomplete('channel', 'channel-suggestions', {{ channels|tojson }});
-setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', {{ roles|tojson }});
-setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', {{ problem_tag_values|tojson }});
-setupTagAutocomplete('role_tags', 'role_tags-suggestions', {{ role_tag_values|tojson }});
+setupAutocomplete('person', 'person-suggestions', 'person', {{ people|tojson }});
+setupAutocomplete('organization', 'organization-suggestions', 'organization', {{ organizations|tojson }});
+setupAutocomplete('signal_type', 'signal_type-suggestions', 'signal_type', {{ signal_types|tojson }});
+setupAutocomplete('channel', 'channel-suggestions', 'channel', {{ channels|tojson }});
+setupAutocomplete('role_opportunity', 'role_opportunity-suggestions', 'role_opportunity', {{ roles|tojson }});
+setupAutocomplete('new_hypothesis', 'hypothesis-suggestions', 'hypothesis', {{ hypothesis_statements|tojson }});
+setupTagAutocomplete('problem_tags', 'problem_tags-suggestions', 'problem_tags', {{ problem_tag_values|tojson }});
+setupTagAutocomplete('role_tags', 'role_tags-suggestions', 'role_tags', {{ role_tag_values|tojson }});
 </script>
 """
 
@@ -870,13 +957,14 @@ def new_signal():
 
         return redirect(url_for("feed", saved=1))
 
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
-    people = recent_distinct_values(db, user_id, "person")
-    organizations = recent_distinct_values(db, user_id, "organization")
-    roles = recent_distinct_values(db, user_id, "role_opportunity")
-    problem_tag_values = distinct_tag_values(db, user_id, "problem")
-    role_tag_values = distinct_tag_values(db, user_id, "role")
+    hidden = get_hidden_suggestions(db, user_id)
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
+    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
+    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
+    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
+    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
+    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -912,8 +1000,8 @@ def new_signal():
         energy_value="",
         problem_tags_value="",
         role_tags_value="",
-        hypotheses=hypotheses,
-        hypothesis_id_value="",
+        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
+        hypothesis_value="",
         relation_value="supports",
         next_action_value="",
     )
@@ -963,13 +1051,14 @@ def edit_signal(signal_id):
 
         return redirect(url_for("feed"))
 
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED)
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED)
-    people = recent_distinct_values(db, user_id, "person")
-    organizations = recent_distinct_values(db, user_id, "organization")
-    roles = recent_distinct_values(db, user_id, "role_opportunity")
-    problem_tag_values = distinct_tag_values(db, user_id, "problem")
-    role_tag_values = distinct_tag_values(db, user_id, "role")
+    hidden = get_hidden_suggestions(db, user_id)
+    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
+    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
+    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
+    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
+    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
+    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
+    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
     hypotheses = (
         db.table("hypotheses")
         .select("id, statement")
@@ -992,7 +1081,7 @@ def edit_signal(signal_id):
 
     hyp_link_rows = (
         db.table("signal_hypotheses")
-        .select("hypothesis_id, relation")
+        .select("relation, hypotheses(statement)")
         .eq("signal_id", signal_id)
         .limit(1)
         .execute()
@@ -1026,11 +1115,106 @@ def edit_signal(signal_id):
         energy_value=str(signal["energy"]) if signal["energy"] else "",
         problem_tags_value=problem_tags_value,
         role_tags_value=role_tags_value,
-        hypotheses=hypotheses,
-        hypothesis_id_value=str(hyp_link["hypothesis_id"]) if hyp_link else "",
+        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
+        hypothesis_value=hyp_link["hypotheses"]["statement"] if hyp_link else "",
         relation_value=hyp_link["relation"] if hyp_link else "supports",
         next_action_value=signal["next_action"] or "",
     )
+
+
+@app.route("/suggestions/hide", methods=["POST"])
+@login_required
+def hide_suggestion():
+    db = get_supabase()
+    user_id = g.user.id
+    field = request.form.get("field", "").strip()
+    value = request.form.get("value", "").strip()
+    if field and value:
+        db.table("hidden_suggestions").upsert(
+            {"user_id": user_id, "field": field, "value": value},
+            on_conflict="user_id,field,value",
+        ).execute()
+    return "", 204
+
+
+SIGNAL_TEXT_COLUMNS = {"signal_type", "channel", "person", "organization", "role_opportunity"}
+TAG_FIELD_CATEGORIES = {"problem_tags": "problem", "role_tags": "role"}
+
+
+@app.route("/suggestions/rename", methods=["POST"])
+@login_required
+def rename_suggestion():
+    db = get_supabase()
+    user_id = g.user.id
+    field = request.form.get("field", "").strip()
+    old_value = request.form.get("old_value", "").strip()
+    new_value = request.form.get("new_value", "").strip()
+    if not field or not old_value or not new_value or old_value == new_value:
+        return "", 204
+
+    if field in SIGNAL_TEXT_COLUMNS:
+        db.table("signals").update({field: new_value}).eq("user_id", user_id).eq(field, old_value).execute()
+
+    elif field in TAG_FIELD_CATEGORIES:
+        category = TAG_FIELD_CATEGORIES[field]
+        new_value = new_value.lower()
+        old_rows = (
+            db.table("tags")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("category", category)
+            .eq("text", old_value)
+            .execute()
+            .data
+        )
+        if old_rows:
+            old_id = old_rows[0]["id"]
+            target_rows = (
+                db.table("tags")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("category", category)
+                .eq("text", new_value)
+                .execute()
+                .data
+            )
+            if target_rows and target_rows[0]["id"] != old_id:
+                target_id = target_rows[0]["id"]
+                linked = db.table("signal_tags").select("signal_id").eq("tag_id", old_id).execute().data
+                for row in linked:
+                    db.table("signal_tags").upsert(
+                        {"signal_id": row["signal_id"], "tag_id": target_id, "user_id": user_id},
+                        on_conflict="signal_id,tag_id",
+                    ).execute()
+                db.table("signal_tags").delete().eq("tag_id", old_id).execute()
+                db.table("tags").delete().eq("id", old_id).execute()
+            else:
+                db.table("tags").update({"text": new_value}).eq("id", old_id).execute()
+
+    elif field == "hypothesis":
+        old_rows = (
+            db.table("hypotheses").select("id").eq("user_id", user_id).eq("statement", old_value).execute().data
+        )
+        if old_rows:
+            old_id = old_rows[0]["id"]
+            target_rows = (
+                db.table("hypotheses")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("statement", new_value)
+                .execute()
+                .data
+            )
+            if target_rows and target_rows[0]["id"] != old_id:
+                target_id = target_rows[0]["id"]
+                db.table("signal_hypotheses").update({"hypothesis_id": target_id}).eq(
+                    "hypothesis_id", old_id
+                ).execute()
+                db.table("hypotheses").delete().eq("id", old_id).execute()
+            else:
+                db.table("hypotheses").update({"statement": new_value}).eq("id", old_id).execute()
+
+    return "", 204
 
 
 FEED_TEMPLATE = """
@@ -1469,10 +1653,20 @@ REVIEW_TEMPLATE = """
 <h2>Mest frekventa roll-taggar</h2>
 <ul>{% for t in top_role_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
 
+<h2>Mest frekventa kanaler</h2>
+<ul>{% for t in top_channels %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
+
 <h2>Hypoteser med ny evidens {{ range_text }}</h2>
 <ul>
 {% for h in hyps_with_new_evidence %}
   <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a> — +{{ h['new_supports'] }} stödjer, +{{ h['new_contradicts'] }} motsäger</li>
+{% endfor %}
+</ul>
+
+<h2>Hypoteser utan ny evidens {{ range_text }}</h2>
+<ul>
+{% for h in hyps_without_new_evidence %}
+  <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a></li>
 {% endfor %}
 </ul>
 
@@ -1516,9 +1710,16 @@ def review():
     range_signals = range_query.order("date", desc=True).execute().data
     range_ids = [s["id"] for s in range_signals]
 
+    channel_counts = {}
+    for s in range_signals:
+        c = s.get("channel")
+        if c:
+            channel_counts[c] = channel_counts.get(c, 0) + 1
+    top_channels = [{"text": k, "n": v} for k, v in sorted(channel_counts.items(), key=lambda kv: -kv[1])][:10]
+
     top_problem_tags = []
     top_role_tags = []
-    hyps_with_new_evidence = []
+    hyp_agg = {}
     if range_ids:
         tag_rows = (
             db.table("signal_tags")
@@ -1546,7 +1747,6 @@ def review():
             .execute()
             .data
         )
-        hyp_agg = {}
         for r in hyp_rows:
             hid = r["hypothesis_id"]
             entry = hyp_agg.setdefault(
@@ -1556,7 +1756,18 @@ def review():
                 entry["new_supports"] += 1
             else:
                 entry["new_contradicts"] += 1
-        hyps_with_new_evidence = list(hyp_agg.values())
+
+    hyps_with_new_evidence = list(hyp_agg.values())
+    active_hypotheses = (
+        db.table("hypotheses")
+        .select("id, statement")
+        .eq("user_id", user_id)
+        .neq("status", "retired")
+        .order("created_at")
+        .execute()
+        .data
+    )
+    hyps_without_new_evidence = [h for h in active_hypotheses if h["id"] not in hyp_agg]
 
     outstanding_actions = (
         db.table("signals")
@@ -1577,7 +1788,9 @@ def review():
         range_count=len(range_signals),
         top_problem_tags=top_problem_tags,
         top_role_tags=top_role_tags,
+        top_channels=top_channels,
         hyps_with_new_evidence=hyps_with_new_evidence,
+        hyps_without_new_evidence=hyps_without_new_evidence,
         outstanding_actions=outstanding_actions,
     )
 

@@ -170,6 +170,8 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .card-toggle:hover{color:var(--coral-700);background:none}
 .feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
 .badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
+.badge.energy-neg{background:var(--rose-100);color:var(--rose-text)}
+.badge.energy-pos{background:var(--teal-100);color:var(--teal-700)}
 .vote-row{display:flex;align-items:center;gap:.5rem;margin-top:.75rem}
 .vote-row form{margin:0}
 .vote-row button{padding:.4rem .9rem;min-height:auto}
@@ -381,6 +383,13 @@ SIGNAL_TYPE_SEED = [
 CHANNEL_SEED = [
     "befintlig relation", "introduktion", "rekryterare", "linkedin", "ansökan", "tidigare kollega",
 ]
+ENERGY_LABELS = {
+    1: "Tog mycket energi",
+    2: "Tog energi",
+    3: "Neutral",
+    4: "Gav energi",
+    5: "Gav mycket energi",
+}
 
 
 def parse_tag_list(raw):
@@ -588,11 +597,17 @@ SIGNAL_FORM_TEMPLATE = """
     <label>Vad hände? *<textarea name="note" required>{{ note_value }}</textarea></label>
   </fieldset>
 
-  <details {% if learning_value or problem_heard_value or interest_signal_value %}open{% endif %}>
+  <details {% if learning_value or problem_heard_value or interest_signal_value or energy_value %}open{% endif %}>
     <summary>Reflektion (valfritt)</summary>
     <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
     <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
     <label>Vad skapade intresse för min bakgrund?<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
+    <label>Kändes signalen (valfritt)
+      <select name="energy">
+        <option value="">-- inte angivet --</option>
+        {% for val, label in energy_labels.items() %}<option value="{{ val }}" {% if energy_value == val|string %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
   </details>
 
   <fieldset>
@@ -818,6 +833,7 @@ def new_signal():
         form = request.form
         signal_type = form["signal_type"].strip()
         channel = form.get("channel", "").strip() or None
+        energy = form.get("energy") or None
         created = (
             db.table("signals")
             .insert(
@@ -833,6 +849,7 @@ def new_signal():
                     "learning": form.get("learning") or None,
                     "problem_heard": form.get("problem_heard") or None,
                     "interest_signal": form.get("interest_signal") or None,
+                    "energy": int(energy) if energy else None,
                     "next_action": form.get("next_action") or None,
                 }
             )
@@ -891,6 +908,8 @@ def new_signal():
         learning_value="",
         problem_heard_value="",
         interest_signal_value="",
+        energy_labels=ENERGY_LABELS,
+        energy_value="",
         problem_tags_value="",
         role_tags_value="",
         hypotheses=hypotheses,
@@ -915,6 +934,7 @@ def edit_signal(signal_id):
         form = request.form
         signal_type = form["signal_type"].strip()
         channel = form.get("channel", "").strip() or None
+        energy = form.get("energy") or None
         db.table("signals").update(
             {
                 "date": form["date"],
@@ -927,6 +947,7 @@ def edit_signal(signal_id):
                 "learning": form.get("learning") or None,
                 "problem_heard": form.get("problem_heard") or None,
                 "interest_signal": form.get("interest_signal") or None,
+                "energy": int(energy) if energy else None,
                 "next_action": form.get("next_action") or None,
             }
         ).eq("id", signal_id).eq("user_id", user_id).execute()
@@ -1001,6 +1022,8 @@ def edit_signal(signal_id):
         learning_value=signal["learning"] or "",
         problem_heard_value=signal["problem_heard"] or "",
         interest_signal_value=signal["interest_signal"] or "",
+        energy_labels=ENERGY_LABELS,
+        energy_value=str(signal["energy"]) if signal["energy"] else "",
         problem_tags_value=problem_tags_value,
         role_tags_value=role_tags_value,
         hypotheses=hypotheses,
@@ -1042,6 +1065,7 @@ FEED_TEMPLATE = """
       data-has-hyp="{{ '1' if hyps_by_signal.get(s['id']) else '' }}">
     <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %} ({{ s['organization'] }}){% endif %}
     <span class="badge">{{ s['signal_type'] }}</span>
+    {% if s['energy_label'] %}<span class="badge energy-{{ s['energy_tier'] }}">{{ s['energy_label'] }}</span>{% endif %}
     {% if tags_by_signal.get(s['id']) %}
       <p class="tags">
         {% for t in tags_by_signal[s['id']] %}<span class="tag {{ t['category'] }}">{{ t['text'] }}</span>{% endfor %}
@@ -1200,6 +1224,8 @@ def feed():
         s["note_truncated"] = line_truncated or bool(rest)
         s["always_expanded"] = bool(s["next_action"] and not s["next_action_done"])
         s["tag_texts"] = ",".join(t["text"] for t in tags_by_signal.get(s["id"], []))
+        s["energy_label"] = ENERGY_LABELS.get(s["energy"])
+        s["energy_tier"] = "neg" if s["energy"] and s["energy"] <= 2 else "pos" if s["energy"] and s["energy"] >= 4 else "neutral"
         s["has_extra"] = bool(
             s["channel"]
             or s["note_truncated"]

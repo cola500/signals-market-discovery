@@ -14,6 +14,7 @@ Kräver en .env-fil med SUPABASE_URL, SUPABASE_ANON_KEY, FLASK_SECRET_KEY
 inte lokalt - appen fungerar likadant lokalt och i produktion.
 """
 import os
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -192,6 +193,11 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .insight-note{background:var(--teal-100);color:var(--teal-700);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;font-weight:500}
 .insight-note p{margin:0}
 .insight-note p+p{margin-top:.35rem}
+.insight-list{list-style:none;padding:0;display:flex;flex-direction:column;gap:.5rem;margin-bottom:1.5rem}
+.insight-item{background:var(--ink-50);border-radius:var(--radius-md);padding:.75rem 1rem;font-size:.9rem}
+.insight-item a{color:inherit;text-decoration:none}
+.insight-item a:hover{text-decoration:underline}
+.insight-item.insight-milestone{background:var(--teal-100);color:var(--teal-700);font-weight:600}
 @keyframes toast-fade{0%,70%{opacity:1;max-height:4rem;margin-bottom:1rem;padding:.75rem 1rem}100%{opacity:0;max-height:0;margin-bottom:0;padding:0 1rem}}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
@@ -561,6 +567,99 @@ def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_r
             lines.append(f"Problemet “{top_text}” har nu dykt upp {top_count} gånger.")
 
     return lines
+
+
+@dataclass
+class Insight:
+    text: str
+    url: str | None
+    category: str  # "milestone" | "hypothesis" | "problem"
+
+
+MILESTONE_SIGNAL_THRESHOLDS = [10, 25, 50, 100, 250, 500]
+MILESTONE_ORG_THRESHOLDS = [5, 10, 25, 50]
+MILESTONE_HYPOTHESIS_THRESHOLDS = [1, 5, 10, 25]
+
+
+def hypothesis_insight_text(statement, relation, total):
+    verb = "stödjer" if relation == "supports" else "motsäger"
+    if total == 1:
+        return f"Detta är den första signalen som {verb} hypotesen “{statement}”."
+    if relation == "supports":
+        return f"Hypotesen “{statement}” har nu stöd från {total} signaler."
+    return f"En motsägande signal observerades för hypotesen “{statement}” ({total} totalt)."
+
+
+def build_milestone_insights(db, user_id):
+    insights = []
+
+    total_signals = len(db.table("signals").select("id").eq("user_id", user_id).execute().data)
+    if total_signals in MILESTONE_SIGNAL_THRESHOLDS:
+        insights.append(Insight(f"Du har nu samlat {total_signals} signaler.", url_for("feed"), "milestone"))
+
+    all_signals = db.table("signals").select("organization").eq("user_id", user_id).execute().data
+    org_count = len({s["organization"] for s in all_signals if s["organization"]})
+    if org_count in MILESTONE_ORG_THRESHOLDS:
+        insights.append(
+            Insight(f"Du har nu samlat signaler från {org_count} organisationer.", None, "milestone")
+        )
+
+    all_hyp_links = db.table("signal_hypotheses").select("hypothesis_id").eq("user_id", user_id).execute().data
+    hyp_with_evidence = len({r["hypothesis_id"] for r in all_hyp_links})
+    if hyp_with_evidence in MILESTONE_HYPOTHESIS_THRESHOLDS:
+        insights.append(
+            Insight(f"{hyp_with_evidence} hypoteser har nu stödjande evidens.", url_for("hypotheses_list"), "milestone")
+        )
+
+    return insights
+
+
+def build_hypothesis_insights(db, range_ids):
+    if not range_ids:
+        return []
+
+    range_hyp_rows = (
+        db.table("signal_hypotheses")
+        .select("hypothesis_id, relation, hypotheses(statement)")
+        .in_("signal_id", range_ids)
+        .execute()
+        .data
+    )
+    touched = {}
+    for r in range_hyp_rows:
+        touched[(r["hypothesis_id"], r["relation"])] = r["hypotheses"]["statement"]
+
+    results = []
+    for (hyp_id, relation), statement in touched.items():
+        total = len(
+            db.table("signal_hypotheses")
+            .select("signal_id")
+            .eq("hypothesis_id", hyp_id)
+            .eq("relation", relation)
+            .execute()
+            .data
+        )
+        text = hypothesis_insight_text(statement, relation, total)
+        results.append((total, Insight(text, url_for("hypothesis_detail", hypothesis_id=hyp_id), "hypothesis")))
+
+    results.sort(key=lambda pair: -pair[0])
+    return [insight for _, insight in results]
+
+
+def build_problem_insights(problem_counts, range_text):
+    results = []
+    for text, n in problem_counts.items():
+        if n >= 2:
+            results.append((n, Insight(f"“{text}” har dykt upp i {n} signaler {range_text}.", url_for("feed", tag=text), "problem")))
+    results.sort(key=lambda pair: -pair[0])
+    return [insight for _, insight in results]
+
+
+def build_insights(db, user_id, range_ids, range_text, problem_counts):
+    insights = build_milestone_insights(db, user_id)
+    insights += build_hypothesis_insights(db, range_ids)
+    insights += build_problem_insights(problem_counts, range_text)
+    return insights[:8]
 
 
 SIGNAL_FORM_TEMPLATE = """
@@ -1340,6 +1439,16 @@ FEED_TEMPLATE = """
     });
   }
 
+  var deepLinkTag = new URLSearchParams(window.location.search).get('tag');
+  if (deepLinkTag && chipRow) {
+    var matchingChip = chipRow.querySelector('[data-filter-tag="' + CSS.escape(deepLinkTag) + '"]');
+    if (matchingChip) {
+      activeTags.push(deepLinkTag);
+      matchingChip.classList.add('active');
+      applyFilters();
+    }
+  }
+
   document.querySelectorAll('.card-toggle').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var card = btn.closest('.feed-card');
@@ -1647,28 +1756,24 @@ REVIEW_TEMPLATE = """
 <p style="margin:-0.5rem 0 1rem"><a href="{{ url_for('ideas') }}">Idé till appen &rarr;</a></p>
 <p>{{ range_count }} signaler {{ range_text }}.</p>
 
-<h2>Mest frekventa problem-taggar</h2>
-<ul>{% for t in top_problem_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
+<h2>Insikter</h2>
+{% if not insights %}
+<p>Inga insikter än — fortsätt logga signaler.</p>
+{% else %}
+<ul class="insight-list">
+{% for i in insights %}
+  <li class="insight-item insight-{{ i.category }}">
+    {% if i.url %}<a href="{{ i.url }}">{{ i.text }}</a>{% else %}{{ i.text }}{% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
 
 <h2>Mest frekventa roll-taggar</h2>
 <ul>{% for t in top_role_tags %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
 
 <h2>Mest frekventa kanaler</h2>
 <ul>{% for t in top_channels %}<li>{{ t['text'] }} ({{ t['n'] }})</li>{% endfor %}</ul>
-
-<h2>Hypoteser med ny evidens {{ range_text }}</h2>
-<ul>
-{% for h in hyps_with_new_evidence %}
-  <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a> — +{{ h['new_supports'] }} stödjer, +{{ h['new_contradicts'] }} motsäger</li>
-{% endfor %}
-</ul>
-
-<h2>Hypoteser utan ny evidens {{ range_text }}</h2>
-<ul>
-{% for h in hyps_without_new_evidence %}
-  <li><a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a></li>
-{% endfor %}
-</ul>
 
 <h2>Obehandlade nästa steg</h2>
 <ul>
@@ -1717,9 +1822,8 @@ def review():
             channel_counts[c] = channel_counts.get(c, 0) + 1
     top_channels = [{"text": k, "n": v} for k, v in sorted(channel_counts.items(), key=lambda kv: -kv[1])][:10]
 
-    top_problem_tags = []
     top_role_tags = []
-    hyp_agg = {}
+    problem_counts = {}
     if range_ids:
         tag_rows = (
             db.table("signal_tags")
@@ -1733,41 +1837,9 @@ def review():
             t = r["tags"]
             bucket = problem_counts if t["category"] == "problem" else role_counts
             bucket[t["text"]] = bucket.get(t["text"], 0) + 1
-        top_problem_tags = [
-            {"text": k, "n": v} for k, v in sorted(problem_counts.items(), key=lambda kv: -kv[1])
-        ][:10]
         top_role_tags = [
             {"text": k, "n": v} for k, v in sorted(role_counts.items(), key=lambda kv: -kv[1])
         ][:10]
-
-        hyp_rows = (
-            db.table("signal_hypotheses")
-            .select("hypothesis_id, relation, hypotheses(id, statement)")
-            .in_("signal_id", range_ids)
-            .execute()
-            .data
-        )
-        for r in hyp_rows:
-            hid = r["hypothesis_id"]
-            entry = hyp_agg.setdefault(
-                hid, {"id": hid, "statement": r["hypotheses"]["statement"], "new_supports": 0, "new_contradicts": 0}
-            )
-            if r["relation"] == "supports":
-                entry["new_supports"] += 1
-            else:
-                entry["new_contradicts"] += 1
-
-    hyps_with_new_evidence = list(hyp_agg.values())
-    active_hypotheses = (
-        db.table("hypotheses")
-        .select("id, statement")
-        .eq("user_id", user_id)
-        .neq("status", "retired")
-        .order("created_at")
-        .execute()
-        .data
-    )
-    hyps_without_new_evidence = [h for h in active_hypotheses if h["id"] not in hyp_agg]
 
     outstanding_actions = (
         db.table("signals")
@@ -1780,17 +1852,19 @@ def review():
     )
     outstanding_actions = [s for s in outstanding_actions if s.get("next_action")]
 
+    insights = build_insights(
+        db, user_id, range_ids, REVIEW_RANGE_OPTIONS[selected_range]["text"], problem_counts
+    )
+
     return render_template_string(
         page("Översikt", REVIEW_TEMPLATE),
         range_options=REVIEW_RANGE_OPTIONS,
         selected_range=selected_range,
         range_text=REVIEW_RANGE_OPTIONS[selected_range]["text"],
         range_count=len(range_signals),
-        top_problem_tags=top_problem_tags,
+        insights=insights,
         top_role_tags=top_role_tags,
         top_channels=top_channels,
-        hyps_with_new_evidence=hyps_with_new_evidence,
-        hyps_without_new_evidence=hyps_without_new_evidence,
         outstanding_actions=outstanding_actions,
     )
 

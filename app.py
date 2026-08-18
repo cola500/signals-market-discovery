@@ -2300,6 +2300,11 @@ def permanently_delete_signal(signal_id):
 
 HYPOTHESES_LIST_TEMPLATE = """
 <h1>Hypoteser</h1>
+<form method="post" action="{{ url_for('hypotheses_list') }}">
+  <label>Ny hypotes<textarea name="statement" required placeholder="T.ex. Rekryterare värdesätter tidigare linjeansvar">{{ statement_value }}</textarea></label>
+  <button type="submit" class="btn-primary">Lägg till hypotes</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if not hypotheses %}<p>Inga hypoteser ännu.</p>{% endif %}
 <ul class="hyp-list">
 {% for h in hypotheses %}
@@ -2376,14 +2381,37 @@ HYPOTHESIS_EDIT_TEMPLATE = """
 """
 
 
-@app.route("/hypotheses")
+@app.route("/hypotheses", methods=["GET", "POST"])
 @login_required
 def hypotheses_list():
     db = get_supabase()
+    user_id = g.user.id
+    error = None
+    statement_value = ""
+
+    if request.method == "POST":
+        statement_value = request.form.get("statement", "").strip()
+        if not statement_value:
+            error = "Hypotesen kan inte vara tom."
+        else:
+            existing = (
+                db.table("hypotheses")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("statement", statement_value)
+                .execute()
+                .data
+            )
+            if not existing:
+                db.table("hypotheses").insert(
+                    {"user_id": user_id, "statement": statement_value, "status": "exploring"}
+                ).execute()
+            return redirect(url_for("hypotheses_list"))
+
     rows = (
         db.table("hypotheses")
         .select("*, signal_hypotheses(relation, signals(deleted_at))")
-        .eq("user_id", g.user.id)
+        .eq("user_id", user_id)
         .order("created_at", desc=True)
         .execute()
         .data
@@ -2396,7 +2424,12 @@ def hypotheses_list():
         h["supports_count"] = relations.count("supports")
         h["contradicts_count"] = relations.count("contradicts")
     rows.sort(key=lambda h: (h["supports_count"] + h["contradicts_count"]) > 0)
-    return render_template_string(page("Hypoteser", HYPOTHESES_LIST_TEMPLATE), hypotheses=rows)
+    return render_template_string(
+        page("Hypoteser", HYPOTHESES_LIST_TEMPLATE),
+        hypotheses=rows,
+        error=error,
+        statement_value=statement_value,
+    )
 
 
 @app.route("/hypotheses/<uuid:hypothesis_id>")

@@ -254,7 +254,6 @@ NAV = """
     <a href="/signals/new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>+ Ny signal</span></a>
     <a href="/hypotheses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7 3 3 0 0 1 1 2.3h6a3 3 0 0 1 1-2.3A7 7 0 0 0 12 2z"></path></svg><span>Hypoteser</span></a>
     <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Översikt</span></a>
-    <a href="/trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg><span>Papperskorg</span></a>
     <form method="post" action="{{ url_for('logout') }}"><button type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span>Logga ut</span></button></form>
   {% else %}
     <a href="{{ url_for('login') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg><span>Logga in</span></a>
@@ -1917,14 +1916,25 @@ FEED_TEMPLATE = """
 {% if show_trashed %}
 <p class="toast">🗑️ Signalen flyttades till papperskorgen.</p>
 {% endif %}
+{% if show_restored %}
+<p class="toast">Signalen återställd.</p>
+{% endif %}
+{% if show_perm_deleted %}
+<p class="toast">Signalen raderades permanent.</p>
+{% endif %}
 {% if learning_feedback %}
 <div class="insight-note">
   {% for line in learning_feedback %}<p>{{ line }}</p>{% endfor %}
 </div>
 {% endif %}
+<div class="actions-row">
+  {% for key, label in view_options.items() %}
+    <a href="{{ url_for('feed', view=key) }}" class="{{ 'btn-accent' if key == view else '' }}">{{ label }}</a>
+  {% endfor %}
+</div>
 {% if not signals %}
-<p>Inga signaler ännu.</p>
-{% else %}
+<p>{{ empty_message }}</p>
+{% elif view != 'deleted' %}
 <div class="feed-controls">
   <input type="search" id="feed-search" placeholder="Sök person, organisation, anteckning…" aria-label="Sök i flödet">
   {% if all_tags or any_hyp_linked %}
@@ -1938,6 +1948,22 @@ FEED_TEMPLATE = """
 {% endif %}
 <ul class="feed">
 {% for s in signals %}
+  {% if view == 'deleted' %}
+  <li>
+    <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %}, {{ s['organization'] }}{% endif %}
+    <p class="note-preview">{{ s['note'] }}</p>
+    <p style="color:var(--ink-400);font-size:.8rem;margin:-0.5rem 0 .75rem">Borttagen {{ s['deleted_at_label'] }}</p>
+    <div class="actions-row">
+      <form method="post" action="{{ url_for('restore_signal', signal_id=s['id']) }}">
+        <button type="submit" class="btn-accent">Återställ</button>
+      </form>
+      <form method="post" action="{{ url_for('permanently_delete_signal', signal_id=s['id']) }}"
+            onsubmit="return confirm('Radera den här signalen permanent? Det går inte att ångra.');">
+        <button type="submit" class="btn-danger">Radera permanent</button>
+      </form>
+    </div>
+  </li>
+  {% else %}
   <li class="feed-card"
       data-search="{{ (s['person'] ~ ' ' ~ (s['organization'] or '') ~ ' ' ~ s['note'])|lower }}"
       data-tags="{{ s['tag_texts'] }}"
@@ -1986,12 +2012,15 @@ FEED_TEMPLATE = """
       {% endif %}
       <a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a>
       <form method="post" action="{{ url_for('delete_signal', signal_id=s['id']) }}">
+        <input type="hidden" name="view" value="{{ view }}">
         <button type="submit" class="btn-danger">Ta bort</button>
       </form>
     </div>
   </li>
+  {% endif %}
 {% endfor %}
 </ul>
+{% if view != 'deleted' %}
 <script>
 (function() {
   var search = document.getElementById('feed-search');
@@ -2056,7 +2085,23 @@ FEED_TEMPLATE = """
   });
 })();
 </script>
+{% endif %}
 """
+
+
+FEED_VIEW_OPTIONS = {
+    "active": "Aktiva",
+    "all": "Alla",
+    "done": "Klara",
+    "deleted": "Borttagna",
+}
+
+FEED_EMPTY_MESSAGES = {
+    "active": "Inga aktiva signaler.",
+    "all": "Inga signaler ännu.",
+    "done": "Inga klarmarkerade signaler än.",
+    "deleted": "Papperskorgen är tom.",
+}
 
 
 @app.route("/")
@@ -2066,69 +2111,84 @@ def feed():
     user_id = g.user.id
     show_saved = request.args.get("saved") == "1"
     show_trashed = request.args.get("trashed") == "1"
+    show_restored = request.args.get("restored") == "1"
+    show_perm_deleted = request.args.get("deleted") == "1"
     learning_feedback = get_flashed_messages()
-    signals = (
-        db.table("signals")
-        .select("*")
-        .eq("user_id", user_id)
-        .is_("deleted_at", "null")
-        .order("date", desc=True)
-        .order("created_at", desc=True)
-        .execute()
-        .data
-    )
-    signal_ids = [s["id"] for s in signals]
+
+    view = request.args.get("view", "active")
+    if view not in FEED_VIEW_OPTIONS:
+        view = "active"
+
+    query = db.table("signals").select("*").eq("user_id", user_id)
+    if view == "deleted":
+        query = query.not_.is_("deleted_at", "null").order("deleted_at", desc=True)
+    else:
+        query = query.is_("deleted_at", "null")
+        if view == "active":
+            query = query.eq("next_action_done", False)
+        elif view == "done":
+            query = query.eq("next_action_done", True)
+        query = query.order("date", desc=True).order("created_at", desc=True)
+    signals = query.execute().data
 
     tags_by_signal = {}
     hyps_by_signal = {}
-    if signal_ids:
-        tag_rows = (
-            db.table("signal_tags")
-            .select("signal_id, tags(text, category)")
-            .in_("signal_id", signal_ids)
-            .execute()
-            .data
-        )
-        for r in tag_rows:
-            tags_by_signal.setdefault(r["signal_id"], []).append(r["tags"])
+    all_tags = []
+    any_hyp_linked = False
 
-        hyp_rows = (
-            db.table("signal_hypotheses")
-            .select("signal_id, relation, hypotheses(statement)")
-            .in_("signal_id", signal_ids)
-            .execute()
-            .data
-        )
-        for r in hyp_rows:
-            hyps_by_signal.setdefault(r["signal_id"], []).append(
-                {"relation": r["relation"], "statement": r["hypotheses"]["statement"]}
+    if view == "deleted":
+        for s in signals:
+            s["deleted_at_label"] = format_deleted_at(s["deleted_at"])
+    else:
+        signal_ids = [s["id"] for s in signals]
+        if signal_ids:
+            tag_rows = (
+                db.table("signal_tags")
+                .select("signal_id, tags(text, category)")
+                .in_("signal_id", signal_ids)
+                .execute()
+                .data
+            )
+            for r in tag_rows:
+                tags_by_signal.setdefault(r["signal_id"], []).append(r["tags"])
+
+            hyp_rows = (
+                db.table("signal_hypotheses")
+                .select("signal_id, relation, hypotheses(statement)")
+                .in_("signal_id", signal_ids)
+                .execute()
+                .data
+            )
+            for r in hyp_rows:
+                hyps_by_signal.setdefault(r["signal_id"], []).append(
+                    {"relation": r["relation"], "statement": r["hypotheses"]["statement"]}
+                )
+
+        note_preview_max = 140
+        for s in signals:
+            first_line, _, rest = s["note"].partition("\n")
+            line_truncated = len(first_line) > note_preview_max
+            s["note_preview"] = (
+                first_line[:note_preview_max].rstrip() + "…" if line_truncated else first_line
+            )
+            s["note_truncated"] = line_truncated or bool(rest)
+            s["always_expanded"] = bool(s["next_action"] and not s["next_action_done"])
+            s["tag_texts"] = ",".join(t["text"] for t in tags_by_signal.get(s["id"], []))
+            s["energy_label"] = ENERGY_LABELS.get(s["energy"])
+            s["energy_tier"] = "neg" if s["energy"] and s["energy"] <= 2 else "pos" if s["energy"] and s["energy"] >= 4 else "neutral"
+            s["has_extra"] = bool(
+                s["channel"]
+                or s["note_truncated"]
+                or s["learning"]
+                or s["role_opportunity"]
+                or s["problem_heard"]
+                or s["interest_signal"]
+                or hyps_by_signal.get(s["id"])
+                or s["next_action"]
             )
 
-    note_preview_max = 140
-    for s in signals:
-        first_line, _, rest = s["note"].partition("\n")
-        line_truncated = len(first_line) > note_preview_max
-        s["note_preview"] = (
-            first_line[:note_preview_max].rstrip() + "…" if line_truncated else first_line
-        )
-        s["note_truncated"] = line_truncated or bool(rest)
-        s["always_expanded"] = bool(s["next_action"] and not s["next_action_done"])
-        s["tag_texts"] = ",".join(t["text"] for t in tags_by_signal.get(s["id"], []))
-        s["energy_label"] = ENERGY_LABELS.get(s["energy"])
-        s["energy_tier"] = "neg" if s["energy"] and s["energy"] <= 2 else "pos" if s["energy"] and s["energy"] >= 4 else "neutral"
-        s["has_extra"] = bool(
-            s["channel"]
-            or s["note_truncated"]
-            or s["learning"]
-            or s["role_opportunity"]
-            or s["problem_heard"]
-            or s["interest_signal"]
-            or hyps_by_signal.get(s["id"])
-            or s["next_action"]
-        )
-
-    all_tags = sorted({t["text"] for tags in tags_by_signal.values() for t in tags})
-    any_hyp_linked = bool(hyps_by_signal)
+        all_tags = sorted({t["text"] for tags in tags_by_signal.values() for t in tags})
+        any_hyp_linked = bool(hyps_by_signal)
 
     return render_template_string(
         page("Signaler", FEED_TEMPLATE),
@@ -2137,8 +2197,13 @@ def feed():
         hyps_by_signal=hyps_by_signal,
         all_tags=all_tags,
         any_hyp_linked=any_hyp_linked,
+        view=view,
+        view_options=FEED_VIEW_OPTIONS,
+        empty_message=FEED_EMPTY_MESSAGES[view],
         show_saved=show_saved,
         show_trashed=show_trashed,
+        show_restored=show_restored,
+        show_perm_deleted=show_perm_deleted,
         learning_feedback=learning_feedback,
     )
 
@@ -2155,7 +2220,10 @@ def delete_signal(signal_id):
     db.table("signals").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq(
         "id", signal_id
     ).eq("user_id", user_id).is_("deleted_at", "null").execute()
-    return redirect(url_for("feed", trashed=1))
+    view = request.form.get("view", "active")
+    if view not in FEED_VIEW_OPTIONS:
+        view = "active"
+    return redirect(url_for("feed", view=view, trashed=1))
 
 
 @app.route("/signals/<uuid:signal_id>/done", methods=["POST"])
@@ -2178,36 +2246,6 @@ def unmark_next_action_done(signal_id):
     return redirect(request.referrer or url_for("feed"))
 
 
-TRASH_TEMPLATE = """
-<h1>🗑️ Papperskorg</h1>
-{% if restored %}<p class="toast">Signalen återställd.</p>{% endif %}
-{% if permanently_deleted %}<p class="toast">Signalen raderades permanent.</p>{% endif %}
-<p style="color:var(--ink-400);font-size:.9rem;margin-top:-0.5rem">Raderade signaler ligger här tills du återställer dem eller tar bort dem permanent.</p>
-{% if not signals %}
-<p>Papperskorgen är tom.</p>
-{% else %}
-<ul class="feed">
-{% for s in signals %}
-  <li>
-    <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %}, {{ s['organization'] }}{% endif %}
-    <p class="note-preview">{{ s['note'] }}</p>
-    <p style="color:var(--ink-400);font-size:.8rem;margin:-0.5rem 0 .75rem">Borttagen {{ s['deleted_at_label'] }}</p>
-    <div class="actions-row">
-      <form method="post" action="{{ url_for('restore_signal', signal_id=s['id']) }}">
-        <button type="submit" class="btn-accent">Återställ</button>
-      </form>
-      <form method="post" action="{{ url_for('permanently_delete_signal', signal_id=s['id']) }}"
-            onsubmit="return confirm('Radera den här signalen permanent? Det går inte att ångra.');">
-        <button type="submit" class="btn-danger">Radera permanent</button>
-      </form>
-    </div>
-  </li>
-{% endfor %}
-</ul>
-{% endif %}
-"""
-
-
 SWEDISH_MONTHS_SHORT = ["jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
 
 
@@ -2219,25 +2257,9 @@ def format_deleted_at(deleted_at_iso):
 @app.route("/trash")
 @login_required
 def trash():
-    db = get_supabase()
-    user_id = g.user.id
-    signals = (
-        db.table("signals")
-        .select("*")
-        .eq("user_id", user_id)
-        .not_.is_("deleted_at", "null")
-        .order("deleted_at", desc=True)
-        .execute()
-        .data
-    )
-    for s in signals:
-        s["deleted_at_label"] = format_deleted_at(s["deleted_at"])
-    return render_template_string(
-        page("Papperskorg", TRASH_TEMPLATE),
-        signals=signals,
-        restored=request.args.get("restored") == "1",
-        permanently_deleted=request.args.get("deleted") == "1",
-    )
+    """Papperskorgen är numera en vy i Flödet (?view=deleted) - denna route
+    finns kvar bara för gamla bokmärken/länkar."""
+    return redirect(url_for("feed", view="deleted"))
 
 
 @app.route("/signals/<uuid:signal_id>/restore", methods=["POST"])
@@ -2247,7 +2269,7 @@ def restore_signal(signal_id):
     user_id = g.user.id
     signal_id = str(signal_id)
     db.table("signals").update({"deleted_at": None}).eq("id", signal_id).eq("user_id", user_id).execute()
-    return redirect(url_for("trash", restored=1))
+    return redirect(url_for("feed", view="deleted", restored=1))
 
 
 @app.route("/signals/<uuid:signal_id>/permanently-delete", methods=["POST"])
@@ -2271,7 +2293,7 @@ def permanently_delete_signal(signal_id):
         db.table("signal_tags").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
         db.table("signal_hypotheses").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
         db.table("signals").delete().eq("id", signal_id).eq("user_id", user_id).execute()
-    return redirect(url_for("trash", deleted=1))
+    return redirect(url_for("feed", view="deleted", deleted=1))
 
 
 HYPOTHESES_LIST_TEMPLATE = """

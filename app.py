@@ -192,6 +192,12 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .hyp-list li>a:hover{color:var(--coral-600);text-decoration:underline}
 .hyp-tags{display:flex;flex-wrap:wrap;gap:.4rem}
 .hyp-tags .badge,.hyp-tags .tag{margin-right:0}
+.evidence-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.6rem}
+.evidence-list li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1rem 1.25rem}
+.evidence-list li>a{display:block;text-decoration:none}
+.evidence-list li>a:hover .evidence-note{color:var(--coral-600);text-decoration:underline}
+.evidence-meta{display:block;font-size:.75rem;color:var(--ink-400);font-weight:600;margin-bottom:.2rem}
+.evidence-note{display:block;color:var(--ink-950);font-weight:600}
 .badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
 .badge.energy-neg{background:var(--rose-100);color:var(--rose-text)}
 .badge.energy-pos{background:var(--teal-100);color:var(--teal-700)}
@@ -2307,14 +2313,32 @@ HYPOTHESIS_DETAIL_TEMPLATE = """
 </form>
 
 <h2>Stödjande signaler ({{ supporting|length }})</h2>
-<ul>
-{% for s in supporting %}<li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</a></li>{% endfor %}
+{% if supporting %}
+<ul class="evidence-list">
+{% for s in supporting %}
+  <li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">
+    <span class="evidence-meta">{{ s['date'] }} — {{ s['person'] }}</span>
+    <span class="evidence-note">{{ s['note'] }}</span>
+  </a></li>
+{% endfor %}
 </ul>
+{% else %}
+<p class="feed-empty">Inga stödjande signaler ännu.</p>
+{% endif %}
 
 <h2>Motsägande signaler ({{ contradicting|length }})</h2>
-<ul>
-{% for s in contradicting %}<li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">{{ s['date'] }} — {{ s['person'] }}: {{ s['note'] }}</a></li>{% endfor %}
+{% if contradicting %}
+<ul class="evidence-list">
+{% for s in contradicting %}
+  <li><a href="{{ url_for('edit_signal', signal_id=s['id']) }}">
+    <span class="evidence-meta">{{ s['date'] }} — {{ s['person'] }}</span>
+    <span class="evidence-note">{{ s['note'] }}</span>
+  </a></li>
+{% endfor %}
 </ul>
+{% else %}
+<p class="feed-empty">Inga motsägande signaler ännu.</p>
+{% endif %}
 """
 
 HYPOTHESIS_EDIT_TEMPLATE = """

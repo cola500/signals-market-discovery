@@ -186,6 +186,12 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .card-toggle{background:none;border:none;color:var(--coral-600);font-weight:700;padding:.4rem 0;min-height:auto}
 .card-toggle:hover{color:var(--coral-700);background:none}
 .feed li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
+.hyp-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.85rem}
+.hyp-list li{border:1px solid var(--ink-100);border-radius:var(--radius-lg);background:var(--white);box-shadow:var(--shadow-sm);padding:1.25rem}
+.hyp-list li>a{display:block;color:var(--ink-950);font-size:1rem;font-weight:700;text-decoration:none;margin-bottom:.65rem}
+.hyp-list li>a:hover{color:var(--coral-600);text-decoration:underline}
+.hyp-tags{display:flex;flex-wrap:wrap;gap:.4rem}
+.hyp-tags .badge,.hyp-tags .tag{margin-right:0}
 .badge{display:inline-block;background:var(--ink-100);color:var(--ink-600);border-radius:var(--radius-full);padding:.15rem .65rem;font-size:.8rem;font-weight:700;margin-right:.3rem}
 .badge.energy-neg{background:var(--rose-100);color:var(--rose-text)}
 .badge.energy-pos{background:var(--teal-100);color:var(--teal-700)}
@@ -254,7 +260,7 @@ NAV = """
 HEAD_EXTRAS = """
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Signals">
+<meta name="apple-mobile-web-app-title" content="Signaler">
 <meta name="theme-color" content="#FF6A47">
 <link rel="apple-touch-icon" href="/app-icon.svg">
 <link rel="icon" href="/app-icon.svg">
@@ -1898,7 +1904,7 @@ def rename_suggestion():
 
 
 FEED_TEMPLATE = """
-<h1>Signals flöde</h1>
+<h1>Signaler</h1>
 {% if show_saved %}
 <p class="toast">Bra jobbat! Signalen är sparad.</p>
 {% endif %}
@@ -2119,7 +2125,7 @@ def feed():
     any_hyp_linked = bool(hyps_by_signal)
 
     return render_template_string(
-        page("Signal Feed", FEED_TEMPLATE),
+        page("Signaler", FEED_TEMPLATE),
         signals=signals,
         tags_by_signal=tags_by_signal,
         hyps_by_signal=hyps_by_signal,
@@ -2265,17 +2271,19 @@ def permanently_delete_signal(signal_id):
 HYPOTHESES_LIST_TEMPLATE = """
 <h1>Hypoteser</h1>
 {% if not hypotheses %}<p>Inga hypoteser ännu.</p>{% endif %}
-<ul>
+<ul class="hyp-list">
 {% for h in hypotheses %}
   <li>
     <a href="{{ url_for('hypothesis_detail', hypothesis_id=h['id']) }}">{{ h['statement'] }}</a>
-    <span class="badge">{{ h['status'] }}</span>
-    {% if h['supports_count'] + h['contradicts_count'] == 0 %}
-      <span class="badge">Ingen evidens än</span>
-    {% else %}
-      <span class="tag role">{{ h['supports_count'] }} stödjer</span>
-      <span class="tag problem">{{ h['contradicts_count'] }} motsäger</span>
-    {% endif %}
+    <div class="hyp-tags">
+      <span class="badge">{{ h['status'] }}</span>
+      {% if h['supports_count'] + h['contradicts_count'] == 0 %}
+        <span class="badge">Ingen evidens än</span>
+      {% else %}
+        <span class="tag role">{{ h['supports_count'] }}stödjer</span>
+        <span class="tag problem">{{ h['contradicts_count'] }}motsäger</span>
+      {% endif %}
+    </div>
   </li>
 {% endfor %}
 </ul>

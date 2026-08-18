@@ -4,6 +4,7 @@
 #     "flask",
 #     "supabase==2.31.0",
 #     "python-dotenv",
+#     "anthropic",
 # ]
 # ///
 """Signals - market discovery for job search.
@@ -12,13 +13,18 @@ Kör lokalt: uv run app.py
 Kräver en .env-fil med SUPABASE_URL, SUPABASE_ANON_KEY, FLASK_SECRET_KEY
 (se .env.example). Data lagras i Supabase Postgres (schema "signals"),
 inte lokalt - appen fungerar likadant lokalt och i produktion.
+
+ANTHROPIC_API_KEY är valfri - saknas den stängs AI-diktering (rösttolkning
+av signaler) av, resten av appen fungerar som vanligt.
 """
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
+import anthropic
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -39,6 +45,10 @@ load_dotenv()
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 _CLIENT_OPTIONS = ClientOptions(schema="signals")
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+VOICE_CAPTURE_ENABLED = bool(ANTHROPIC_API_KEY)
+_anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if VOICE_CAPTURE_ENABLED else None
 
 app = Flask(__name__)
 app.secret_key = os.environ["FLASK_SECRET_KEY"]
@@ -201,6 +211,11 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .insight-item.insight-role-trend-up{background:var(--teal-100);color:var(--teal-700)}
 .insight-item.insight-role-trend-down{background:var(--rose-100);color:var(--rose-text)}
 .insight-subtext{display:block;margin-top:.25rem;font-weight:400;color:var(--ink-600);font-size:.8rem}
+.ai-draft-banner{background:var(--teal-100);color:var(--teal-700);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;font-size:.9rem}
+.ai-hint{display:inline-block;background:var(--teal-100);color:var(--teal-700);border-radius:var(--radius-full);padding:.1rem .5rem;font-size:.7rem;font-weight:700;margin-left:.3rem;vertical-align:middle}
+.voice-capture-hint{color:var(--ink-400);font-size:.85rem;margin:.5rem 0}
+.ai-hypothesis-suggestion{background:var(--teal-100);color:var(--teal-700);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;font-size:.9rem}
+.ai-hypothesis-suggestion button{display:block;margin-top:.5rem;background:var(--white);border:1px solid var(--teal-700);color:var(--teal-700)}
 @keyframes toast-fade{0%,70%{opacity:1;max-height:4rem;margin-bottom:1rem;padding:.75rem 1rem}100%{opacity:0;max-height:0;margin-bottom:0;padding:0 1rem}}
 #splash{position:fixed;inset:0;background:var(--coral-500);display:flex;align-items:center;justify-content:center;z-index:100;transition:opacity .4s ease-out}
 #splash img{width:88px;height:88px;border-radius:20px}
@@ -525,6 +540,35 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
         ).execute()
         return hypothesis_id, relation
     return None, None
+
+
+def build_signal_form_context(db, user_id):
+    """Autocomplete-listor och hypoteser för signal-formuläret - delas av
+    new_signal(), edit_signal() och voice_draft()."""
+    hidden = get_hidden_suggestions(db, user_id)
+    hypotheses = (
+        db.table("hypotheses")
+        .select("id, statement")
+        .eq("user_id", user_id)
+        .neq("status", "retired")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    return {
+        "hidden": hidden,
+        "signal_types": distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set())),
+        "channels": distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set())),
+        "people": recent_distinct_values(db, user_id, "person", hidden.get("person", set())),
+        "organizations": recent_distinct_values(db, user_id, "organization", hidden.get("organization", set())),
+        "roles": recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set())),
+        "problem_tag_values": distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set())),
+        "role_tag_values": distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set())),
+        "hypotheses": hypotheses,
+        "hypothesis_statements": [
+            h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())
+        ],
+    }
 
 
 def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_raw):
@@ -921,8 +965,146 @@ def build_role_insights(db, user_id, range_signals, range_ids, role_counts,
     return insights[:ROLE_INSIGHTS_MAX_TOTAL]
 
 
+VOICE_DRAFT_MODEL = "claude-opus-5"
+
+VOICE_DRAFT_SYSTEM_TEMPLATE = """
+Du hjälper en jobbsökande att omvandla ett fritt talat eller skrivet transkript
+till ett UTKAST till en "signal" - en kort logg-post om ett jobbsöknings-
+relaterat möte (kaffe, rekryterarsamtal, LinkedIn-utskick, intervju, etc).
+
+Detta är ENDAST ett utkast som människan granskar och redigerar innan något
+sparas. Du sparar ingenting, du skapar inga nya hypoteser i systemet, du ger
+inga karriärråd. Du extraherar och föreslår, inget annat.
+
+KRITISK REGEL - skilj mellan två typer av fält:
+
+1. EXPLICIT ANGIVET - direkt uttalat i transkriptet (namn, organisation,
+   vad som hände). Extrahera detta ordagrant/nära ordagrant. Hitta ALDRIG
+   på ett namn, en organisation eller en händelse som inte nämndes.
+
+2. INFERERAT - kräver tolkning (problem, lärdom, intresse, energi, taggar,
+   hypotes-koppling, nästa steg). Gör bara en inferens om den har rimligt
+   stöd i texten. Om du är osäker: lämna fältet tomt (null) istället för
+   att hitta på något. Det är alltid bättre att lämna ett fält tomt än att
+   presentera en gissning som fakta.
+
+Föredra ALLTID ett befintligt värde (person, organisation, roll, tagg) om
+det rimligen matchar, istället för att skapa en nästan-duplicerad variant.
+Ändra ALDRIG användarens eget ordval till ett befintligt värde om det inte
+tydligt är samma sak. En hypotes-koppling får ENDAST föreslås om den matchar
+en BEFINTLIG hypotes nedan ordagrant - hitta aldrig på en ny hypotes.
+
+Befintlig kontext (från tidigare loggade signaler i Signals):
+{existing_context}
+""".strip()
+
+VOICE_DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "person": {"type": ["string", "null"]},
+        "organization": {"type": ["string", "null"]},
+        "role_opportunity": {"type": ["string", "null"]},
+        "signal_type": {"type": ["string", "null"], "description": "T.ex. kaffemöte, rekryterarkontakt, linkedin-utskick, intervju, telefonsamtal"},
+        "channel": {"type": ["string", "null"], "description": "T.ex. linkedin, telefon, fysiskt möte, mejl"},
+        "note": {"type": "string", "description": "Kort faktisk sammanfattning av vad som hände, baserad ENDAST på det som sagts"},
+        "problem_heard": {"type": ["string", "null"]},
+        "learning": {"type": ["string", "null"]},
+        "interest_signal": {"type": ["string", "null"], "description": "Vad som väckte intresse för personens bakgrund - inferens"},
+        "energy": {"type": ["integer", "null"], "description": "1=tog mycket energi, 5=gav mycket energi"},
+        "next_action": {"type": ["string", "null"]},
+        "problem_tags": {"type": "array", "items": {"type": "string"}},
+        "role_tags": {"type": "array", "items": {"type": "string"}},
+        "hypothesis_suggestion": {
+            "type": ["object", "null"],
+            "properties": {
+                "statement": {"type": "string", "description": "Måste matcha en BEFINTLIG hypotes ordagrant"},
+                "relation": {"type": "string", "enum": ["supports", "contradicts"]},
+            },
+            "required": ["statement", "relation"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["person", "organization", "role_opportunity", "signal_type", "channel", "note",
+                 "problem_heard", "learning", "interest_signal", "energy", "next_action",
+                 "problem_tags", "role_tags", "hypothesis_suggestion"],
+    "additionalProperties": False,
+}
+
+
+def build_voice_draft_system_prompt(ctx):
+    lines = []
+    if ctx["people"]:
+        lines.append("Personer: " + ", ".join(ctx["people"]))
+    if ctx["organizations"]:
+        lines.append("Organisationer: " + ", ".join(ctx["organizations"]))
+    if ctx["roles"]:
+        lines.append("Roller/möjligheter: " + ", ".join(ctx["roles"]))
+    if ctx["role_tag_values"]:
+        lines.append("Roll-taggar: " + ", ".join(ctx["role_tag_values"]))
+    if ctx["problem_tag_values"]:
+        lines.append("Problem-taggar: " + ", ".join(ctx["problem_tag_values"]))
+    if ctx["hypothesis_statements"]:
+        lines.append("Hypoteser: " + " | ".join(ctx["hypothesis_statements"]))
+    existing_context = "\n".join(lines) if lines else "(inga tidigare signaler loggade än)"
+    return VOICE_DRAFT_SYSTEM_TEMPLATE.format(existing_context=existing_context)
+
+
+def extract_voice_draft(transcript, ctx):
+    """Anropar Claude för att omvandla ett transkript till ett strukturerat
+    utkast som matchar signal-formulärets fält. Sparar ingenting - ren
+    extraktion som alltid granskas av användaren i formuläret innan Spara.
+    Returnerar (draft_dict, felmeddelande) - exakt en av dem är None."""
+    try:
+        response = _anthropic_client.messages.create(
+            model=VOICE_DRAFT_MODEL,
+            max_tokens=2000,
+            system=build_voice_draft_system_prompt(ctx),
+            output_config={"format": {"type": "json_schema", "schema": VOICE_DRAFT_SCHEMA}},
+            messages=[{"role": "user", "content": f"Transkript:\n{transcript}"}],
+        )
+    except anthropic.APIError:
+        return None, "Kunde inte nå AI-tjänsten just nu. Fyll i formuläret manuellt."
+
+    if response.stop_reason == "refusal":
+        return None, "AI-tjänsten kunde inte tolka inspelningen. Fyll i formuläret manuellt."
+
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if not text:
+        return None, "Fick inget svar från AI-tjänsten. Fyll i formuläret manuellt."
+
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError:
+        return None, "AI-tjänsten svarade i fel format. Fyll i formuläret manuellt."
+
+
 SIGNAL_FORM_TEMPLATE = """
 <h1>{{ heading }}</h1>
+
+{% if ai_error %}<p class="error">{{ ai_error }}</p>{% endif %}
+
+{% if ai_draft %}
+<div class="ai-draft-banner">
+  <strong>AI-utkast</strong> — granska och rätta fälten nedan innan du sparar. Fält märkta
+  <span class="ai-hint">AI-förslag</span> kommer från tolkning, inte det du sa ordagrant.
+</div>
+{% endif %}
+
+{% if voice_capture_enabled and not ai_draft %}
+<details class="voice-capture">
+  <summary>🎤 Tala in signal (AI-utkast)</summary>
+  <p class="voice-capture-hint">Beskriv fritt vad som hände — vem, var, vad ni pratade om. AI:n föreslår ett utkast som du granskar innan du sparar. Inget sparas automatiskt.</p>
+  <form method="post" action="{{ voice_draft_action }}" id="voice-draft-form">
+    <textarea name="transcript" id="voice-transcript" placeholder="Transkriptet dyker upp här när du talar, eller skriv direkt själv..."></textarea>
+    <div class="actions-row">
+      <button type="button" id="voice-record-btn">Starta inspelning</button>
+      <button type="submit" id="voice-generate-btn" class="btn-accent">Generera utkast</button>
+    </div>
+    <p id="voice-unsupported" class="voice-capture-hint" hidden>Rösttolkning stöds inte i den här webbläsaren — skriv in vad som hände i fältet ovan istället.</p>
+  </form>
+</details>
+{% endif %}
+
 <form method="post" action="{{ form_action }}">
   <fieldset>
     <legend>Vem &amp; när</legend>
@@ -943,19 +1125,19 @@ SIGNAL_FORM_TEMPLATE = """
 
   <fieldset>
     <legend>Vad hände</legend>
-    <label>Signal-typ *
+    <label>Signal-typ * {% if ai_draft and signal_type_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <div class="autocomplete-field">
         <input type="text" name="signal_type" id="signal_type" value="{{ signal_type_value }}" autocomplete="off" required>
         <ul class="suggestions" id="signal_type-suggestions" role="listbox"></ul>
       </div>
     </label>
-    <label>Roll/möjlighet (valfritt)
+    <label>Roll/möjlighet (valfritt) {% if ai_draft and role_opportunity_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <div class="autocomplete-field">
         <input type="text" name="role_opportunity" id="role_opportunity" value="{{ role_opportunity_value }}" autocomplete="off">
         <ul class="suggestions" id="role_opportunity-suggestions" role="listbox"></ul>
       </div>
     </label>
-    <label>Kanal (valfritt)
+    <label>Kanal (valfritt) {% if ai_draft and channel_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <div class="autocomplete-field">
         <input type="text" name="channel" id="channel" value="{{ channel_value }}" autocomplete="off">
         <ul class="suggestions" id="channel-suggestions" role="listbox"></ul>
@@ -966,10 +1148,10 @@ SIGNAL_FORM_TEMPLATE = """
 
   <details {% if learning_value or problem_heard_value or interest_signal_value or energy_value %}open{% endif %}>
     <summary>Reflektion (valfritt)</summary>
-    <label>Vad lärde jag mig?<textarea name="learning">{{ learning_value }}</textarea></label>
-    <label>Vilket problem/behov hörde jag?<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
-    <label>Vad skapade intresse för min bakgrund?<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
-    <label>Kändes signalen (valfritt)
+    <label>Vad lärde jag mig? {% if ai_draft and learning_value %}<span class="ai-hint">AI-förslag</span>{% endif %}<textarea name="learning">{{ learning_value }}</textarea></label>
+    <label>Vilket problem/behov hörde jag? {% if ai_draft and problem_heard_value %}<span class="ai-hint">AI-förslag</span>{% endif %}<textarea name="problem_heard">{{ problem_heard_value }}</textarea></label>
+    <label>Vad skapade intresse för min bakgrund? {% if ai_draft and interest_signal_value %}<span class="ai-hint">AI-förslag</span>{% endif %}<textarea name="interest_signal">{{ interest_signal_value }}</textarea></label>
+    <label>Kändes signalen (valfritt) {% if ai_draft and energy_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <select name="energy">
         <option value="">-- inte angivet --</option>
         {% for val, label in energy_labels.items() %}<option value="{{ val }}" {% if energy_value == val|string %}selected{% endif %}>{{ label }}</option>{% endfor %}
@@ -979,18 +1161,28 @@ SIGNAL_FORM_TEMPLATE = """
 
   <fieldset>
     <legend>Taggar &amp; hypotes</legend>
-    <label>Problem-taggar (kommaseparerat)
+    <label>Problem-taggar (kommaseparerat) {% if ai_draft and problem_tags_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <div class="autocomplete-field">
         <input type="text" name="problem_tags" id="problem_tags" value="{{ problem_tags_value }}" autocomplete="off">
         <ul class="suggestions" id="problem_tags-suggestions" role="listbox"></ul>
       </div>
     </label>
-    <label>Roll-taggar (kommaseparerat)
+    <label>Roll-taggar (kommaseparerat) {% if ai_draft and role_tags_value %}<span class="ai-hint">AI-förslag</span>{% endif %}
       <div class="autocomplete-field">
         <input type="text" name="role_tags" id="role_tags" value="{{ role_tags_value }}" autocomplete="off">
         <ul class="suggestions" id="role_tags-suggestions" role="listbox"></ul>
       </div>
     </label>
+    {% if ai_hypothesis_suggestion %}
+    <div class="ai-hypothesis-suggestion">
+      AI-förslag: koppla till hypotesen &ldquo;{{ ai_hypothesis_suggestion.statement }}&rdquo;
+      ({{ "stödjer" if ai_hypothesis_suggestion.relation == "supports" else "motsäger" }}).
+      Kopplas INTE automatiskt.
+      <button type="button" id="apply-hypothesis-suggestion"
+              data-statement="{{ ai_hypothesis_suggestion.statement }}"
+              data-relation="{{ ai_hypothesis_suggestion.relation }}">Använd förslaget</button>
+    </div>
+    {% endif %}
     <label>Hypotes (valfritt)
       <div class="autocomplete-field">
         <input type="text" name="new_hypothesis" id="new_hypothesis" value="{{ hypothesis_value }}" autocomplete="off">
@@ -1005,7 +1197,7 @@ SIGNAL_FORM_TEMPLATE = """
     </label>
   </fieldset>
 
-  <label>Nästa steg (valfritt)<input type="text" name="next_action" value="{{ next_action_value }}"></label>
+  <label>Nästa steg (valfritt) {% if ai_draft and next_action_value %}<span class="ai-hint">AI-förslag</span>{% endif %}<input type="text" name="next_action" value="{{ next_action_value }}"></label>
 
   <button type="submit" class="btn-primary">{{ submit_label }}</button>
 </form>
@@ -1017,6 +1209,73 @@ function updateRelationVisibility() {
 }
 document.getElementById('new_hypothesis').addEventListener('input', updateRelationVisibility);
 updateRelationVisibility();
+
+var applyHypBtn = document.getElementById('apply-hypothesis-suggestion');
+if (applyHypBtn) {
+  applyHypBtn.addEventListener('click', function() {
+    var newHyp = document.getElementById('new_hypothesis');
+    newHyp.value = applyHypBtn.getAttribute('data-statement');
+    newHyp.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('select[name="relation"]').value = applyHypBtn.getAttribute('data-relation');
+  });
+}
+
+(function() {
+  var recordBtn = document.getElementById('voice-record-btn');
+  if (!recordBtn) return;
+  var transcriptField = document.getElementById('voice-transcript');
+  var generateBtn = document.getElementById('voice-generate-btn');
+  var unsupportedHint = document.getElementById('voice-unsupported');
+  var voiceForm = document.getElementById('voice-draft-form');
+  var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognitionCtor) {
+    recordBtn.hidden = true;
+    unsupportedHint.hidden = false;
+    return;
+  }
+
+  var recognition = new SpeechRecognitionCtor();
+  recognition.lang = 'sv-SE';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  var recording = false;
+  var baseText = '';
+
+  recognition.addEventListener('result', function(event) {
+    var finalText = '';
+    var interimText = '';
+    for (var i = 0; i < event.results.length; i++) {
+      var chunk = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += chunk + ' ';
+      else interimText += chunk;
+    }
+    transcriptField.value = (baseText + finalText + interimText).trim();
+  });
+
+  recognition.addEventListener('end', function() {
+    if (recording) recognition.start();
+  });
+
+  recordBtn.addEventListener('click', function() {
+    if (recording) {
+      recording = false;
+      recognition.stop();
+      recordBtn.textContent = 'Starta inspelning';
+    } else {
+      baseText = transcriptField.value ? transcriptField.value.trim() + ' ' : '';
+      recording = true;
+      recognition.start();
+      recordBtn.textContent = 'Stoppa inspelning';
+    }
+  });
+
+  voiceForm.addEventListener('submit', function() {
+    if (recording) { recording = false; recognition.stop(); }
+    generateBtn.disabled = true;
+    generateBtn.textContent = 'Genererar utkast...';
+  });
+})();
 
 function setupComboboxAria(input, list, suggestionsId) {
   input.setAttribute('role', 'combobox');
@@ -1315,23 +1574,7 @@ def new_signal():
 
         return redirect(url_for("feed", saved=1))
 
-    hidden = get_hidden_suggestions(db, user_id)
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
-    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
-    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
-    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
-    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
-    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
-    hypotheses = (
-        db.table("hypotheses")
-        .select("id, statement")
-        .eq("user_id", user_id)
-        .neq("status", "retired")
-        .order("created_at", desc=True)
-        .execute()
-        .data
-    )
+    ctx = build_signal_form_context(db, user_id)
     return render_template_string(
         page("Ny signal", SIGNAL_FORM_TEMPLATE),
         heading="Ny signal",
@@ -1340,15 +1583,15 @@ def new_signal():
         date_value=date.today().isoformat(),
         person_value="",
         organization_value="",
-        people=people,
-        organizations=organizations,
-        roles=roles,
-        problem_tag_values=problem_tag_values,
-        role_tag_values=role_tag_values,
-        signal_types=signal_types,
+        people=ctx["people"],
+        organizations=ctx["organizations"],
+        roles=ctx["roles"],
+        problem_tag_values=ctx["problem_tag_values"],
+        role_tag_values=ctx["role_tag_values"],
+        signal_types=ctx["signal_types"],
         signal_type_value="",
         role_opportunity_value="",
-        channels=channels,
+        channels=ctx["channels"],
         channel_value="",
         note_value="",
         learning_value="",
@@ -1358,10 +1601,73 @@ def new_signal():
         energy_value="",
         problem_tags_value="",
         role_tags_value="",
-        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
+        hypothesis_statements=ctx["hypothesis_statements"],
         hypothesis_value="",
         relation_value="supports",
         next_action_value="",
+        voice_capture_enabled=VOICE_CAPTURE_ENABLED,
+        voice_draft_action=url_for("voice_draft"),
+        ai_draft=False,
+        ai_error=None,
+        ai_hypothesis_suggestion=None,
+    )
+
+
+@app.route("/signals/voice-draft", methods=["POST"])
+@login_required
+def voice_draft():
+    """Tar emot ett diktetat transkript, ber Claude föreslå fältvärden, och
+    renderar samma formulär som new_signal() förifyllt. Sparar ALDRIG något
+    själv - vanlig Spara-knapp (form_action pekar på new_signal) krävs alltid."""
+    db = get_supabase()
+    user_id = g.user.id
+    transcript = request.form.get("transcript", "").strip()
+    ctx = build_signal_form_context(db, user_id)
+
+    draft, ai_error = None, None
+    if not VOICE_CAPTURE_ENABLED:
+        ai_error = "AI-diktering är inte aktiverad."
+    elif not transcript:
+        ai_error = "Ingen inspelning att tolka. Försök igen eller fyll i manuellt."
+    else:
+        draft, ai_error = extract_voice_draft(transcript, ctx)
+    draft = draft or {}
+
+    return render_template_string(
+        page("Ny signal", SIGNAL_FORM_TEMPLATE),
+        heading="Ny signal",
+        form_action=url_for("new_signal"),
+        submit_label="Spara signal",
+        date_value=date.today().isoformat(),
+        person_value=draft.get("person") or "",
+        organization_value=draft.get("organization") or "",
+        people=ctx["people"],
+        organizations=ctx["organizations"],
+        roles=ctx["roles"],
+        problem_tag_values=ctx["problem_tag_values"],
+        role_tag_values=ctx["role_tag_values"],
+        signal_types=ctx["signal_types"],
+        signal_type_value=draft.get("signal_type") or "",
+        role_opportunity_value=draft.get("role_opportunity") or "",
+        channels=ctx["channels"],
+        channel_value=draft.get("channel") or "",
+        note_value=draft.get("note") or "",
+        learning_value=draft.get("learning") or "",
+        problem_heard_value=draft.get("problem_heard") or "",
+        interest_signal_value=draft.get("interest_signal") or "",
+        energy_labels=ENERGY_LABELS,
+        energy_value=str(draft["energy"]) if draft.get("energy") else "",
+        problem_tags_value=", ".join(draft.get("problem_tags") or []),
+        role_tags_value=", ".join(draft.get("role_tags") or []),
+        hypothesis_statements=ctx["hypothesis_statements"],
+        hypothesis_value="",
+        relation_value="supports",
+        next_action_value=draft.get("next_action") or "",
+        voice_capture_enabled=VOICE_CAPTURE_ENABLED,
+        voice_draft_action=url_for("voice_draft"),
+        ai_draft=bool(draft) and not ai_error,
+        ai_error=ai_error,
+        ai_hypothesis_suggestion=draft.get("hypothesis_suggestion"),
     )
 
 
@@ -1409,23 +1715,7 @@ def edit_signal(signal_id):
 
         return redirect(url_for("feed"))
 
-    hidden = get_hidden_suggestions(db, user_id)
-    signal_types = distinct_values(db, user_id, "signal_type", SIGNAL_TYPE_SEED, hidden.get("signal_type", set()))
-    channels = distinct_values(db, user_id, "channel", CHANNEL_SEED, hidden.get("channel", set()))
-    people = recent_distinct_values(db, user_id, "person", hidden.get("person", set()))
-    organizations = recent_distinct_values(db, user_id, "organization", hidden.get("organization", set()))
-    roles = recent_distinct_values(db, user_id, "role_opportunity", hidden.get("role_opportunity", set()))
-    problem_tag_values = distinct_tag_values(db, user_id, "problem", hidden.get("problem_tags", set()))
-    role_tag_values = distinct_tag_values(db, user_id, "role", hidden.get("role_tags", set()))
-    hypotheses = (
-        db.table("hypotheses")
-        .select("id, statement")
-        .eq("user_id", user_id)
-        .neq("status", "retired")
-        .order("created_at", desc=True)
-        .execute()
-        .data
-    )
+    ctx = build_signal_form_context(db, user_id)
 
     tag_rows = (
         db.table("signal_tags")
@@ -1455,15 +1745,15 @@ def edit_signal(signal_id):
         date_value=signal["date"],
         person_value=signal["person"],
         organization_value=signal["organization"] or "",
-        people=people,
-        organizations=organizations,
-        roles=roles,
-        problem_tag_values=problem_tag_values,
-        role_tag_values=role_tag_values,
-        signal_types=signal_types,
+        people=ctx["people"],
+        organizations=ctx["organizations"],
+        roles=ctx["roles"],
+        problem_tag_values=ctx["problem_tag_values"],
+        role_tag_values=ctx["role_tag_values"],
+        signal_types=ctx["signal_types"],
         signal_type_value=signal["signal_type"],
         role_opportunity_value=signal["role_opportunity"] or "",
-        channels=channels,
+        channels=ctx["channels"],
         channel_value=signal["channel"] or "",
         note_value=signal["note"],
         learning_value=signal["learning"] or "",
@@ -1473,7 +1763,7 @@ def edit_signal(signal_id):
         energy_value=str(signal["energy"]) if signal["energy"] else "",
         problem_tags_value=problem_tags_value,
         role_tags_value=role_tags_value,
-        hypothesis_statements=[h["statement"] for h in hypotheses if h["statement"] not in hidden.get("hypothesis", set())],
+        hypothesis_statements=ctx["hypothesis_statements"],
         hypothesis_value=hyp_link["hypotheses"]["statement"] if hyp_link else "",
         relation_value=hyp_link["relation"] if hyp_link else "supports",
         next_action_value=signal["next_action"] or "",

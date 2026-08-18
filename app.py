@@ -2187,7 +2187,9 @@ def feed():
                 or s["next_action"]
             )
 
-        all_tags = sorted({t["text"] for tags in tags_by_signal.values() for t in tags})
+        all_tags = sorted(
+            {t["text"] for tags in tags_by_signal.values() for t in tags if t["category"] == "role"}
+        )
         any_hyp_linked = bool(hyps_by_signal)
 
     return render_template_string(

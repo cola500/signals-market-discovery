@@ -5,6 +5,7 @@
 #     "supabase==2.31.0",
 #     "python-dotenv",
 #     "anthropic",
+#     "tzdata",
 # ]
 # ///
 """Signals - market discovery for job search.
@@ -21,6 +22,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 from pathlib import Path
 
@@ -2177,6 +2179,7 @@ TRASH_TEMPLATE = """
   <li>
     <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %}, {{ s['organization'] }}{% endif %}
     <p class="note-preview">{{ s['note'] }}</p>
+    <p style="color:var(--ink-400);font-size:.8rem;margin:-0.5rem 0 .75rem">Borttagen {{ s['deleted_at_label'] }}</p>
     <div class="actions-row">
       <form method="post" action="{{ url_for('restore_signal', signal_id=s['id']) }}">
         <button type="submit" class="btn-accent">Återställ</button>
@@ -2193,6 +2196,14 @@ TRASH_TEMPLATE = """
 """
 
 
+SWEDISH_MONTHS_SHORT = ["jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
+
+
+def format_deleted_at(deleted_at_iso):
+    local = datetime.fromisoformat(deleted_at_iso).astimezone(ZoneInfo("Europe/Stockholm"))
+    return f"{local.day} {SWEDISH_MONTHS_SHORT[local.month - 1]} {local:%H:%M}"
+
+
 @app.route("/trash")
 @login_required
 def trash():
@@ -2207,6 +2218,8 @@ def trash():
         .execute()
         .data
     )
+    for s in signals:
+        s["deleted_at_label"] = format_deleted_at(s["deleted_at"])
     return render_template_string(
         page("Papperskorg", TRASH_TEMPLATE),
         signals=signals,

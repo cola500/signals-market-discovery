@@ -240,6 +240,7 @@ NAV = """
     <a href="/signals/new"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>+ Ny signal</span></a>
     <a href="/hypotheses"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-4 12.7 3 3 0 0 1 1 2.3h6a3 3 0 0 1 1-2.3A7 7 0 0 0 12 2z"></path></svg><span>Hypoteser</span></a>
     <a href="/review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg><span>Översikt</span></a>
+    <a href="/trash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg><span>Papperskorg</span></a>
     <form method="post" action="{{ url_for('logout') }}"><button type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span>Logga ut</span></button></form>
   {% else %}
     <a href="{{ url_for('login') }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg><span>Logga in</span></a>
@@ -456,22 +457,30 @@ def get_hidden_suggestions(db, user_id):
 
 
 def distinct_values(db, user_id, column, seed, hidden=frozenset()):
-    rows = db.table("signals").select(column).eq("user_id", user_id).execute().data
+    rows = db.table("signals").select(column).eq("user_id", user_id).is_("deleted_at", "null").execute().data
     values = {r[column] for r in rows if r.get(column)}
     values.update(seed)
     return sorted(v for v in values if v not in hidden)
 
 
 def distinct_tag_values(db, user_id, category, hidden=frozenset()):
+    """Endast taggar som fortfarande sitter på minst en aktiv (icke
+    papperskorgs-) signal - en tagg vars enda koppling var till en
+    raderad signal ska inte dyka upp i förslag eller AI-kontext."""
     rows = (
         db.table("tags")
-        .select("text")
+        .select("text, signal_tags(signals(deleted_at))")
         .eq("user_id", user_id)
         .eq("category", category)
         .execute()
         .data
     )
-    return sorted({r["text"] for r in rows} - set(hidden))
+    active_texts = {
+        r["text"]
+        for r in rows
+        if any(st["signals"] and st["signals"]["deleted_at"] is None for st in r.get("signal_tags", []))
+    }
+    return sorted(active_texts - set(hidden))
 
 
 def recent_distinct_values(db, user_id, column, hidden=frozenset()):
@@ -479,6 +488,7 @@ def recent_distinct_values(db, user_id, column, hidden=frozenset()):
         db.table("signals")
         .select(f"{column}, date")
         .eq("user_id", user_id)
+        .is_("deleted_at", "null")
         .order("date", desc=True)
         .execute()
         .data
@@ -582,14 +592,15 @@ def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_r
     if hypothesis_id and relation:
         hyp_rows = db.table("hypotheses").select("statement").eq("id", hypothesis_id).execute().data
         statement = hyp_rows[0]["statement"] if hyp_rows else ""
-        evidence_count = len(
+        evidence_rows = (
             db.table("signal_hypotheses")
-            .select("signal_id")
+            .select("signal_id, signals(deleted_at)")
             .eq("hypothesis_id", hypothesis_id)
             .eq("relation", relation)
             .execute()
             .data
         )
+        evidence_count = len([r for r in evidence_rows if r["signals"] and r["signals"]["deleted_at"] is None])
         verb = "stödjande" if relation == "supports" else "motsägande"
         if evidence_count <= 1:
             lines.append(f"Hypotesen “{statement}” fick sin första {verb} signal.")
@@ -606,7 +617,10 @@ def build_learning_feedback(db, user_id, hypothesis_id, relation, problem_tags_r
         )
         if not tag_rows:
             continue
-        n = len(db.table("signal_tags").select("signal_id").eq("tag_id", tag_rows[0]["id"]).execute().data)
+        tag_signal_rows = (
+            db.table("signal_tags").select("signal_id, signals(deleted_at)").eq("tag_id", tag_rows[0]["id"]).execute().data
+        )
+        n = len([r for r in tag_signal_rows if r["signals"] and r["signals"]["deleted_at"] is None])
         tag_counts[text] = n
     if tag_counts:
         top_text, top_count = max(tag_counts.items(), key=lambda kv: kv[1])
@@ -641,19 +655,25 @@ def hypothesis_insight_text(statement, relation, total):
 def build_milestone_insights(db, user_id):
     insights = []
 
-    total_signals = len(db.table("signals").select("id").eq("user_id", user_id).execute().data)
+    total_signals = len(
+        db.table("signals").select("id").eq("user_id", user_id).is_("deleted_at", "null").execute().data
+    )
     if total_signals in MILESTONE_SIGNAL_THRESHOLDS:
         insights.append(Insight(f"Du har nu samlat {total_signals} signaler.", url_for("feed"), "milestone"))
 
-    all_signals = db.table("signals").select("organization").eq("user_id", user_id).execute().data
+    all_signals = (
+        db.table("signals").select("organization").eq("user_id", user_id).is_("deleted_at", "null").execute().data
+    )
     org_count = len({s["organization"] for s in all_signals if s["organization"]})
     if org_count in MILESTONE_ORG_THRESHOLDS:
         insights.append(
             Insight(f"Du har nu samlat signaler från {org_count} organisationer.", None, "milestone")
         )
 
-    all_hyp_links = db.table("signal_hypotheses").select("hypothesis_id").eq("user_id", user_id).execute().data
-    hyp_with_evidence = len({r["hypothesis_id"] for r in all_hyp_links})
+    all_hyp_links = (
+        db.table("signal_hypotheses").select("hypothesis_id, signals(deleted_at)").eq("user_id", user_id).execute().data
+    )
+    hyp_with_evidence = len({r["hypothesis_id"] for r in all_hyp_links if r["signals"] and r["signals"]["deleted_at"] is None})
     if hyp_with_evidence in MILESTONE_HYPOTHESIS_THRESHOLDS:
         insights.append(
             Insight(f"{hyp_with_evidence} hypoteser har nu stödjande evidens.", url_for("hypotheses_list"), "milestone")
@@ -679,14 +699,15 @@ def build_hypothesis_insights(db, range_ids):
 
     results = []
     for (hyp_id, relation), statement in touched.items():
-        total = len(
+        total_rows = (
             db.table("signal_hypotheses")
-            .select("signal_id")
+            .select("signal_id, signals(deleted_at)")
             .eq("hypothesis_id", hyp_id)
             .eq("relation", relation)
             .execute()
             .data
         )
+        total = len([r for r in total_rows if r["signals"] and r["signals"]["deleted_at"] is None])
         text = hypothesis_insight_text(statement, relation, total)
         results.append((total, Insight(text, url_for("hypothesis_detail", hypothesis_id=hyp_id), "hypothesis")))
 
@@ -763,6 +784,7 @@ def build_role_trend_data(db, user_id, role_counts, range_days, range_start, ran
         db.table("signals")
         .select("id")
         .eq("user_id", user_id)
+        .is_("deleted_at", "null")
         .gte("date", prev_start)
         .lt("date", range_start)
         .execute()
@@ -1677,7 +1699,15 @@ def edit_signal(signal_id):
     db = get_supabase()
     user_id = g.user.id
     signal_id = str(signal_id)
-    signal_rows = db.table("signals").select("*").eq("id", signal_id).eq("user_id", user_id).execute().data
+    signal_rows = (
+        db.table("signals")
+        .select("*")
+        .eq("id", signal_id)
+        .eq("user_id", user_id)
+        .is_("deleted_at", "null")
+        .execute()
+        .data
+    )
     if not signal_rows:
         return redirect(url_for("feed"))
     signal = signal_rows[0]
@@ -1870,6 +1900,9 @@ FEED_TEMPLATE = """
 {% if show_saved %}
 <p class="toast">Bra jobbat! Signalen är sparad.</p>
 {% endif %}
+{% if show_trashed %}
+<p class="toast">🗑️ Signalen flyttades till papperskorgen.</p>
+{% endif %}
 {% if learning_feedback %}
 <div class="insight-note">
   {% for line in learning_feedback %}<p>{{ line }}</p>{% endfor %}
@@ -1938,8 +1971,7 @@ FEED_TEMPLATE = """
         </form>
       {% endif %}
       <a href="{{ url_for('edit_signal', signal_id=s['id']) }}">Redigera</a>
-      <form method="post" action="{{ url_for('delete_signal', signal_id=s['id']) }}"
-            onsubmit="return confirm('Ta bort den här signalen? Det går inte att ångra.');">
+      <form method="post" action="{{ url_for('delete_signal', signal_id=s['id']) }}">
         <button type="submit" class="btn-danger">Ta bort</button>
       </form>
     </div>
@@ -2019,11 +2051,13 @@ def feed():
     db = get_supabase()
     user_id = g.user.id
     show_saved = request.args.get("saved") == "1"
+    show_trashed = request.args.get("trashed") == "1"
     learning_feedback = get_flashed_messages()
     signals = (
         db.table("signals")
         .select("*")
         .eq("user_id", user_id)
+        .is_("deleted_at", "null")
         .order("date", desc=True)
         .order("created_at", desc=True)
         .execute()
@@ -2090,6 +2124,7 @@ def feed():
         all_tags=all_tags,
         any_hyp_linked=any_hyp_linked,
         show_saved=show_saved,
+        show_trashed=show_trashed,
         learning_feedback=learning_feedback,
     )
 
@@ -2097,13 +2132,16 @@ def feed():
 @app.route("/signals/<uuid:signal_id>/delete", methods=["POST"])
 @login_required
 def delete_signal(signal_id):
+    """Soft delete - flyttar signalen till papperskorgen. Taggar och
+    hypoteskopplingar rörs inte, så en återställning återför allt precis
+    som det var."""
     db = get_supabase()
     user_id = g.user.id
     signal_id = str(signal_id)
-    db.table("signal_tags").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
-    db.table("signal_hypotheses").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
-    db.table("signals").delete().eq("id", signal_id).eq("user_id", user_id).execute()
-    return redirect(url_for("feed"))
+    db.table("signals").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq(
+        "id", signal_id
+    ).eq("user_id", user_id).is_("deleted_at", "null").execute()
+    return redirect(url_for("feed", trashed=1))
 
 
 @app.route("/signals/<uuid:signal_id>/done", methods=["POST"])
@@ -2124,6 +2162,91 @@ def unmark_next_action_done(signal_id):
         "user_id", g.user.id
     ).execute()
     return redirect(request.referrer or url_for("feed"))
+
+
+TRASH_TEMPLATE = """
+<h1>🗑️ Papperskorg</h1>
+{% if restored %}<p class="toast">Signalen återställd.</p>{% endif %}
+{% if permanently_deleted %}<p class="toast">Signalen raderades permanent.</p>{% endif %}
+<p style="color:var(--ink-400);font-size:.9rem;margin-top:-0.5rem">Raderade signaler ligger här tills du återställer dem eller tar bort dem permanent.</p>
+{% if not signals %}
+<p>Papperskorgen är tom.</p>
+{% else %}
+<ul class="feed">
+{% for s in signals %}
+  <li>
+    <strong>{{ s['date'] }}</strong> — {{ s['person'] }}{% if s['organization'] %}, {{ s['organization'] }}{% endif %}
+    <p class="note-preview">{{ s['note'] }}</p>
+    <div class="actions-row">
+      <form method="post" action="{{ url_for('restore_signal', signal_id=s['id']) }}">
+        <button type="submit" class="btn-accent">Återställ</button>
+      </form>
+      <form method="post" action="{{ url_for('permanently_delete_signal', signal_id=s['id']) }}"
+            onsubmit="return confirm('Radera den här signalen permanent? Det går inte att ångra.');">
+        <button type="submit" class="btn-danger">Radera permanent</button>
+      </form>
+    </div>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+"""
+
+
+@app.route("/trash")
+@login_required
+def trash():
+    db = get_supabase()
+    user_id = g.user.id
+    signals = (
+        db.table("signals")
+        .select("*")
+        .eq("user_id", user_id)
+        .not_.is_("deleted_at", "null")
+        .order("deleted_at", desc=True)
+        .execute()
+        .data
+    )
+    return render_template_string(
+        page("Papperskorg", TRASH_TEMPLATE),
+        signals=signals,
+        restored=request.args.get("restored") == "1",
+        permanently_deleted=request.args.get("deleted") == "1",
+    )
+
+
+@app.route("/signals/<uuid:signal_id>/restore", methods=["POST"])
+@login_required
+def restore_signal(signal_id):
+    db = get_supabase()
+    user_id = g.user.id
+    signal_id = str(signal_id)
+    db.table("signals").update({"deleted_at": None}).eq("id", signal_id).eq("user_id", user_id).execute()
+    return redirect(url_for("trash", restored=1))
+
+
+@app.route("/signals/<uuid:signal_id>/permanently-delete", methods=["POST"])
+@login_required
+def permanently_delete_signal(signal_id):
+    """Hård radering - kan ENDAST ske för signaler som redan ligger i
+    papperskorgen (skydd mot att av misstag permanent radera en aktiv signal)."""
+    db = get_supabase()
+    user_id = g.user.id
+    signal_id = str(signal_id)
+    trashed_rows = (
+        db.table("signals")
+        .select("id")
+        .eq("id", signal_id)
+        .eq("user_id", user_id)
+        .not_.is_("deleted_at", "null")
+        .execute()
+        .data
+    )
+    if trashed_rows:
+        db.table("signal_tags").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
+        db.table("signal_hypotheses").delete().eq("signal_id", signal_id).eq("user_id", user_id).execute()
+        db.table("signals").delete().eq("id", signal_id).eq("user_id", user_id).execute()
+    return redirect(url_for("trash", deleted=1))
 
 
 HYPOTHESES_LIST_TEMPLATE = """
@@ -2190,14 +2313,17 @@ def hypotheses_list():
     db = get_supabase()
     rows = (
         db.table("hypotheses")
-        .select("*, signal_hypotheses(relation)")
+        .select("*, signal_hypotheses(relation, signals(deleted_at))")
         .eq("user_id", g.user.id)
         .order("created_at", desc=True)
         .execute()
         .data
     )
     for h in rows:
-        relations = [sh["relation"] for sh in h.get("signal_hypotheses", [])]
+        relations = [
+            sh["relation"] for sh in h.get("signal_hypotheses", [])
+            if sh["signals"] and sh["signals"]["deleted_at"] is None
+        ]
         h["supports_count"] = relations.count("supports")
         h["contradicts_count"] = relations.count("contradicts")
     rows.sort(key=lambda h: (h["supports_count"] + h["contradicts_count"]) > 0)
@@ -2219,11 +2345,12 @@ def hypothesis_detail(hypothesis_id):
 
     evidence = (
         db.table("signal_hypotheses")
-        .select("relation, signals(id, date, person, note)")
+        .select("relation, signals(id, date, person, note, deleted_at)")
         .eq("hypothesis_id", hypothesis_id)
         .execute()
         .data
     )
+    evidence = [e for e in evidence if e["signals"] and e["signals"]["deleted_at"] is None]
     supporting = sorted(
         (e["signals"] for e in evidence if e["relation"] == "supports"), key=lambda s: s["date"], reverse=True
     )
@@ -2371,7 +2498,7 @@ def review():
         selected_range = "week"
     range_days = REVIEW_RANGE_OPTIONS[selected_range]["days"]
 
-    range_query = db.table("signals").select("*").eq("user_id", user_id)
+    range_query = db.table("signals").select("*").eq("user_id", user_id).is_("deleted_at", "null")
     range_start = None
     if range_days is not None:
         range_start = (datetime.now(timezone.utc) - timedelta(days=range_days)).date().isoformat()
@@ -2414,6 +2541,7 @@ def review():
         .select("*")
         .eq("user_id", user_id)
         .eq("next_action_done", False)
+        .is_("deleted_at", "null")
         .order("date", desc=True)
         .execute()
         .data

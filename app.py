@@ -210,9 +210,9 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .tag.role{background:var(--teal-100);color:var(--teal-700)}
 .tag.outcome{background:var(--ink-100);color:var(--ink-600)}
 .outcome-options{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem}
-.outcome-option{display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .8rem;font-size:.8rem;font-weight:600;border-radius:var(--radius-full);border:1px solid var(--ink-200);background:var(--white);color:var(--ink-600);min-height:auto;cursor:pointer}
+.outcome-option{display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .8rem;font-size:.8rem;font-weight:600;border-radius:var(--radius-full);border:1px solid var(--ink-200);background:var(--white);color:var(--ink-600);min-height:auto;cursor:pointer;white-space:nowrap}
 .outcome-option:has(input:checked){background:var(--coral-500);border-color:var(--coral-500);color:#fff}
-.outcome-option input{margin:0}
+.outcome-option input[type="checkbox"]{width:1.1rem;height:1.1rem;flex-shrink:0;margin:0;padding:0;accent-color:var(--coral-500)}
 .hyp{display:block;font-size:.85rem;font-weight:600;margin-top:.4rem}
 .hyp.supports{color:var(--success-500)}
 .hyp.contradicts{color:var(--danger-500)}

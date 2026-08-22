@@ -208,6 +208,11 @@ legend{font-weight:700;font-size:.875rem;padding:0 .3rem}
 .tag{display:inline-block;border-radius:var(--radius-full);padding:.2rem .7rem;font-size:.8rem;font-weight:600;margin-right:.35rem}
 .tag.problem{background:var(--rose-100);color:var(--rose-text)}
 .tag.role{background:var(--teal-100);color:var(--teal-700)}
+.tag.outcome{background:var(--ink-100);color:var(--ink-600)}
+.outcome-options{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.75rem}
+.outcome-option{display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .8rem;font-size:.8rem;font-weight:600;border-radius:var(--radius-full);border:1px solid var(--ink-200);background:var(--white);color:var(--ink-600);min-height:auto;cursor:pointer}
+.outcome-option:has(input:checked){background:var(--coral-500);border-color:var(--coral-500);color:#fff}
+.outcome-option input{margin:0}
 .hyp{display:block;font-size:.85rem;font-weight:600;margin-top:.4rem}
 .hyp.supports{color:var(--success-500)}
 .hyp.contradicts{color:var(--danger-500)}
@@ -432,6 +437,17 @@ ENERGY_LABELS = {
     4: "Gav energi",
     5: "Gav mycket energi",
 }
+OUTCOME_TYPES = {
+    "new_contact": "Ny kontakt",
+    "introduction": "Introduktion",
+    "deeper_relationship": "Fördjupad relation",
+    "new_learning": "Ny lärdom",
+    "new_hypothesis": "Ny hypotes",
+    "job_lead": "Jobbledtråd",
+    "interview": "Intervju",
+    "offer": "Erbjudande",
+    "other": "Annat",
+}
 
 
 def parse_tag_list(raw):
@@ -563,6 +579,20 @@ def set_signal_hypothesis(db, user_id, signal_id, form):
         ).execute()
         return hypothesis_id, relation
     return None, None
+
+
+def set_signal_outcomes(db, user_id, signal_id, form):
+    db.table("signal_outcomes").delete().eq("signal_id", signal_id).execute()
+    outcome_types = [t for t in form.getlist("outcome_types") if t in OUTCOME_TYPES]
+    if not outcome_types:
+        return
+    note = form.get("outcome_note", "").strip() or None
+    db.table("signal_outcomes").insert(
+        [
+            {"signal_id": signal_id, "user_id": user_id, "outcome_type": t, "note": note}
+            for t in outcome_types
+        ]
+    ).execute()
 
 
 def build_signal_form_context(db, user_id):
@@ -1232,6 +1262,19 @@ SIGNAL_FORM_TEMPLATE = """
     </label>
   </fieldset>
 
+  <fieldset>
+    <legend>Vad hände på grund av den här signalen?</legend>
+    <div class="outcome-options">
+      {% for value, label in outcome_types.items() %}
+      <label class="outcome-option">
+        <input type="checkbox" name="outcome_types" value="{{ value }}" {% if value in selected_outcome_types %}checked{% endif %}>
+        {{ label }}
+      </label>
+      {% endfor %}
+    </div>
+    <label>Anteckning (valfritt)<textarea name="outcome_note">{{ outcome_note_value }}</textarea></label>
+  </fieldset>
+
   <label>Nästa steg (valfritt) {% if ai_draft and next_action_value %}<span class="ai-hint">AI-förslag</span>{% endif %}<input type="text" name="next_action" value="{{ next_action_value }}"></label>
 
   <button type="submit" class="btn-primary">{{ submit_label }}</button>
@@ -1601,6 +1644,7 @@ def new_signal():
         set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
         set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
         linked_hypothesis_id, linked_relation = set_signal_hypothesis(db, user_id, signal_id, form)
+        set_signal_outcomes(db, user_id, signal_id, form)
 
         for line in build_learning_feedback(
             db, user_id, linked_hypothesis_id, linked_relation, form.get("problem_tags", "")
@@ -1618,6 +1662,9 @@ def new_signal():
         date_value=date.today().isoformat(),
         person_value="",
         organization_value="",
+        outcome_types=OUTCOME_TYPES,
+        selected_outcome_types=set(),
+        outcome_note_value="",
         people=ctx["people"],
         organizations=ctx["organizations"],
         roles=ctx["roles"],
@@ -1750,6 +1797,7 @@ def edit_signal(signal_id):
         set_signal_tags(db, user_id, signal_id, "problem", form.get("problem_tags", ""))
         set_signal_tags(db, user_id, signal_id, "role", form.get("role_tags", ""))
         linked_hypothesis_id, linked_relation = set_signal_hypothesis(db, user_id, signal_id, form)
+        set_signal_outcomes(db, user_id, signal_id, form)
 
         for line in build_learning_feedback(
             db, user_id, linked_hypothesis_id, linked_relation, form.get("problem_tags", "")
@@ -1780,6 +1828,16 @@ def edit_signal(signal_id):
     )
     hyp_link = hyp_link_rows[0] if hyp_link_rows else None
 
+    outcome_rows = (
+        db.table("signal_outcomes")
+        .select("outcome_type, note")
+        .eq("signal_id", signal_id)
+        .execute()
+        .data
+    )
+    selected_outcome_types = {r["outcome_type"] for r in outcome_rows}
+    outcome_note_value = next((r["note"] for r in outcome_rows if r["note"]), "")
+
     return render_template_string(
         page("Redigera signal", SIGNAL_FORM_TEMPLATE),
         heading="Redigera signal",
@@ -1788,6 +1846,9 @@ def edit_signal(signal_id):
         date_value=signal["date"],
         person_value=signal["person"],
         organization_value=signal["organization"] or "",
+        outcome_types=OUTCOME_TYPES,
+        selected_outcome_types=selected_outcome_types,
+        outcome_note_value=outcome_note_value,
         people=ctx["people"],
         organizations=ctx["organizations"],
         roles=ctx["roles"],
@@ -1976,6 +2037,11 @@ FEED_TEMPLATE = """
         {% for t in tags_by_signal[s['id']] %}<span class="tag {{ t['category'] }}">{{ t['text'] }}</span>{% endfor %}
       </p>
     {% endif %}
+    {% if outcomes_by_signal.get(s['id']) %}
+      <p class="tags">
+        Ledde till: {% for label in outcomes_by_signal[s['id']] %}<span class="tag outcome">{{ label }}</span>{% endfor %}
+      </p>
+    {% endif %}
     <p class="note-preview">{{ s['note_preview'] }}</p>
     {% if s['has_extra'] %}
       <div class="card-details" {% if not s['always_expanded'] %}hidden{% endif %}>
@@ -2133,6 +2199,7 @@ def feed():
 
     tags_by_signal = {}
     hyps_by_signal = {}
+    outcomes_by_signal = {}
     all_tags = []
     any_hyp_linked = False
 
@@ -2162,6 +2229,18 @@ def feed():
             for r in hyp_rows:
                 hyps_by_signal.setdefault(r["signal_id"], []).append(
                     {"relation": r["relation"], "statement": r["hypotheses"]["statement"]}
+                )
+
+            outcome_rows = (
+                db.table("signal_outcomes")
+                .select("signal_id, outcome_type")
+                .in_("signal_id", signal_ids)
+                .execute()
+                .data
+            )
+            for r in outcome_rows:
+                outcomes_by_signal.setdefault(r["signal_id"], []).append(
+                    OUTCOME_TYPES.get(r["outcome_type"], r["outcome_type"])
                 )
 
         note_preview_max = 140
@@ -2197,6 +2276,7 @@ def feed():
         signals=signals,
         tags_by_signal=tags_by_signal,
         hyps_by_signal=hyps_by_signal,
+        outcomes_by_signal=outcomes_by_signal,
         all_tags=all_tags,
         any_hyp_linked=any_hyp_linked,
         view=view,
@@ -2531,7 +2611,7 @@ REVIEW_TEMPLATE = """
   <a href="{{ url_for('review', range=key) }}" class="{{ 'btn-accent' if key == selected_range else '' }}">{{ opt['label'] }}</a>
 {% endfor %}
 </div>
-<p style="margin:-0.5rem 0 1rem"><a href="{{ url_for('ideas') }}">Idé till appen &rarr;</a></p>
+<p style="margin:-0.5rem 0 1rem"><a href="{{ url_for('outcomes_analysis') }}">Vad brukar mina signaler skapa? &rarr;</a> &middot; <a href="{{ url_for('ideas') }}">Idé till appen &rarr;</a></p>
 <p>{{ range_count }} signaler {{ range_text }}.</p>
 
 <h2>Insikter</h2>
@@ -2669,6 +2749,60 @@ def review():
         top_role_tags=top_role_tags,
         top_channels=top_channels,
         outstanding_actions=outstanding_actions,
+    )
+
+
+OUTCOMES_TEMPLATE = """
+<h1>Vad brukar mina signaler skapa?</h1>
+{% if not groups %}
+<p>Inga outcomes registrerade än. Lägg till vad en signal ledde till på signalens sida.</p>
+{% else %}
+<ul class="hyp-list">
+{% for g in groups %}
+  <li>
+    <strong>{{ g['signal_type'] }}</strong>
+    <p class="tags">
+      {% for item in g['items'] %}<span class="tag outcome">{{ item['label'] }} ({{ item['n'] }})</span>{% endfor %}
+    </p>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+"""
+
+
+@app.route("/outcomes")
+@login_required
+def outcomes_analysis():
+    db = get_supabase()
+    user_id = g.user.id
+    rows = (
+        db.table("signal_outcomes")
+        .select("outcome_type, signals!signal_outcomes_signal_id_fkey(signal_type, deleted_at)")
+        .eq("user_id", user_id)
+        .execute()
+        .data
+    )
+    counts_by_signal_type = {}
+    for r in rows:
+        signal = r["signals"]
+        if not signal or signal["deleted_at"] is not None:
+            continue
+        type_counts = counts_by_signal_type.setdefault(signal["signal_type"], {})
+        type_counts[r["outcome_type"]] = type_counts.get(r["outcome_type"], 0) + 1
+
+    groups = []
+    for signal_type, counts in counts_by_signal_type.items():
+        items = sorted(
+            ({"label": OUTCOME_TYPES.get(t, t), "n": n} for t, n in counts.items()),
+            key=lambda item: -item["n"],
+        )
+        groups.append({"signal_type": signal_type, "items": items, "total": sum(counts.values())})
+    groups.sort(key=lambda group: -group["total"])
+
+    return render_template_string(
+        page("Vad brukar mina signaler skapa?", OUTCOMES_TEMPLATE),
+        groups=groups,
     )
 
 
